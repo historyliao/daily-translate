@@ -5,6 +5,13 @@ const LATENCY_SAMPLE_LIMIT = 500;
 const RUNTIME_LOG_LIMIT = 500;
 const CONTENT_SCRIPT_SESSION_KEY = "contentScriptsRestored";
 const DEFAULT_TARGET_LANGUAGE = "zh-CN";
+const RESERVED_MODEL_PARAMETERS = new Set([
+  "model",
+  "messages",
+  "stream",
+  "stream_options",
+  "response_format"
+]);
 const TARGET_LANGUAGE_NAMES = {
   "zh-CN": "Simplified Chinese",
   "zh-TW": "Traditional Chinese",
@@ -27,6 +34,7 @@ const RUNTIME_LOG_DEFINITIONS = {
   http_error: { level: "error", message: "翻译服务请求失败" },
   api_error: { level: "error", message: "模型 API 返回错误" },
   invalid_base_url: { level: "error", message: "Base URL 无效" },
+  invalid_model_parameters: { level: "error", message: "模型参数配置无效" },
   invalid_response: { level: "error", message: "翻译服务返回了无效结果" },
   empty_response: { level: "error", message: "模型未返回译文内容" },
   response_json_invalid: { level: "error", message: "API 响应体不是合法 JSON" },
@@ -456,6 +464,7 @@ async function requestTranslation(
         "baseUrl",
         "token",
         "model",
+        "modelParameters",
         "streamEnabled",
         "targetLanguage"
       ]);
@@ -472,6 +481,7 @@ async function requestTranslation(
     }
 
     const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+    const modelParameters = getModelParameters(settings.modelParameters);
     const stream = streamEnabled === true;
     const targetLanguage = TARGET_LANGUAGE_NAMES[settings.targetLanguage]
       || TARGET_LANGUAGE_NAMES[DEFAULT_TARGET_LANGUAGE];
@@ -483,9 +493,9 @@ async function requestTranslation(
     diagnostics.apiHost = target.host;
     diagnostics.streamEnabled = stream;
     const requestBody = {
+      ...modelParameters,
       model,
       stream,
-      temperature: 0,
       messages: [
         {
           role: "system",
@@ -501,13 +511,11 @@ async function requestTranslation(
       requestBody.stream_options = { include_usage: true };
     }
     if (
+      jsonOutput &&
       new URL(normalizedBaseUrl).hostname === "api.deepseek.com" &&
       ["deepseek-v4-flash", "deepseek-v4-pro"].includes(model)
     ) {
-      requestBody.thinking = { type: "disabled" };
-      if (jsonOutput) {
-        requestBody.response_format = { type: "json_object" };
-      }
+      requestBody.response_format = { type: "json_object" };
     }
 
     resetTimeout();
@@ -1173,6 +1181,8 @@ function recordTranslationError(error) {
       return recordError("configuration_missing");
     case "INVALID_URL":
       return recordError("invalid_base_url");
+    case "INVALID_MODEL_PARAMETERS":
+      return recordError("invalid_model_parameters");
     case "SETTINGS_READ_FAILED":
       return recordError("settings_read_failed");
     case "TIMEOUT":
@@ -1335,6 +1345,19 @@ function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
 }
 
+function getModelParameters(value) {
+  if (value === undefined) {
+    return {};
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("INVALID_MODEL_PARAMETERS");
+  }
+  if (Object.keys(value).some((name) => RESERVED_MODEL_PARAMETERS.has(name))) {
+    throw new Error("INVALID_MODEL_PARAMETERS");
+  }
+  return value;
+}
+
 function toUserError(error) {
   if (Object.hasOwn(RESPONSE_ERROR_EVENTS, error.message)) {
     return RUNTIME_LOG_DEFINITIONS[RESPONSE_ERROR_EVENTS[error.message]].message;
@@ -1344,6 +1367,8 @@ function toUserError(error) {
       return "请先在插件设置中配置 Base URL、Token 和 Model";
     case "INVALID_URL":
       return "Base URL 无效，请检查设置";
+    case "INVALID_MODEL_PARAMETERS":
+      return "模型参数无效，请检查插件设置";
     case "SETTINGS_READ_FAILED":
       return "无法读取插件配置，请重试";
     case "HTTP_401":

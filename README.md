@@ -8,7 +8,7 @@ Daily Translate 是一款本地运行、数据私有、完全自主控制的开�
 - 私有存储：API 配置、Token、用量统计、延迟指标和运行日志均保存在 Chrome 本地
 - 两种翻译模式：支持划词翻译和整页翻译，适应单词查询、段落阅读和全文浏览
 - 服务自主选择：支持本地、内网或云端部署的 OpenAI-compatible API，翻译文本仅发送到用户指定的服务
-- 模型自由配置：Base URL、Token 和 Model 均可配置，不绑定模型或 API 服务商
+- 模型自由配置：Base URL、Token、Model 和模型参数均可配置，不绑定模型或 API 服务商
 - 流式与非流式响应：可根据模型服务能力切换，默认使用兼容性更好的非流式模式
 - 用量与延迟监控：本地统计 Token 消耗、TTFB、TTFT、完成耗时、P50 和 P95，并记录运行错误
 - 开源透明：基于 MIT License，代码和数据处理路径均可检查、修改和自行维护
@@ -27,6 +27,7 @@ Daily Translate 是一款本地运行、数据私有、完全自主控制的开�
 - `Base URL`：OpenAI-compatible API 的版本根地址，例如 `https://api.openai.com/v1`。
 - `Token`：API 访问令牌。
 - `Model`：模型名称，例如服务商提供的模型标识。
+- `模型参数（JSON）`：可选，填写模型或服务商支持的 Chat Completions 参数，例如 `temperature`、`top_p`、`max_tokens`、`reasoning_effort` 或 `thinking`；留空时由 API 使用默认值。
 - `启用流式响应`：可选，默认关闭；开启后译文会随模型输出逐步显示，API 服务需支持 Chat Completions SSE 响应。
 - `目标语言`：点击工具栏中的插件图标，在“控制”页选择；默认是简体中文。
 
@@ -61,7 +62,7 @@ Token 只保存在 Chrome 的 `storage.local` 中，由后台 Service Worker 读
 
 批量 JSON 可解析且 ID 对应关系明确时，仅对缺失条目、缺字段或空译文的条目各补译一次。补译带上可用的同段上下文，要求只返回目标片段的纯文本译文，超时为 30 秒，不重复请求已经取得的条目，额外用量和延迟照常计入监控；补译在当前段落内串行执行，关闭翻译会一并取消。所有补译成功后才提交整个段落；任一补译仍失败则保留整段原文、暂停后续翻译并记录汇总错误。错误详情中的 `invalidItems` 和 `retryFailures` 会分别列出初始异常条目及补译失败原因，帮助定位模型返回格式或 API 问题。
 
-使用官方 `api.deepseek.com` 的 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时，插件为翻译请求显式设置 `thinking: {type: "disabled"}`，减少思考阶段的等待；批量翻译同时启用 `response_format: {type: "json_object"}`，约束模型输出 JSON。其他 API 和模型不附加这些参数；经第三方网关使用 DeepSeek 时，由网关决定思考模式。
+模型参数统一用于划词、整页和段落补译请求。例如可使用 `{"temperature": 0}` 降低随机性，或按模型文档配置 `reasoning_effort`、`thinking` 来权衡响应速度与翻译质量。不同服务支持的字段和值不同；不支持的参数会由 API 返回原始错误。`model`、`messages`、`stream`、`stream_options` 和 `response_format` 由插件管理，不能在模型参数中覆盖。整页批量翻译对官方 DeepSeek V4 仍由插件启用 `response_format: {type: "json_object"}`，保证批量响应可校验。
 
 遇到翻译错误时，控制面板日志会区分空译文、JSON 格式错误、批量条目数或 ID 不匹配、输出长度截断等原因。模型 API 报错会直接展示 HTTP 错误响应正文，或流式/非流式响应中的原始 `error` 内容；当前配置的 Token 和 Bearer 凭据会脱敏，超过 8192 字符的错误内容会截断并标注。展开“错误详情”可查看失败阶段、错误代码、API 主机、流式状态、HTTP 状态、返回字符数、耗时、模型结束原因及批量校验细节；旧日志没有详情，需要查看更新后产生的新日志。插件不主动记录原文、译文或思考内容，但服务端错误可能回显请求文本，分享日志前请检查。JSON 输出约束不能保证条目完整，插件仍会校验每个 ID，避免将译文写到错误位置。
 
