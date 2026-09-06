@@ -18,7 +18,7 @@ const TARGET_LANGUAGES = new Set([
   "zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de",
   "es", "pt", "it", "ru", "ar", "hi"
 ]);
-const TRANSLATION_MODES = new Set(["selection", "viewport"]);
+const TRANSLATION_MODES = new Set(["selection", "viewport", "page"]);
 const numberFormatter = new Intl.NumberFormat("zh-CN");
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
@@ -517,6 +517,10 @@ function formatDuration(value) {
 }
 
 function renderLogs() {
+  const expandedLogs = new Set(Array.from(
+    runtimeLogsList.querySelectorAll("details[open]"),
+    (details) => details.dataset.logKey
+  ));
   const visibleLogs = runtimeLogs
     .filter((log) => logLevel === "all" || log.level === logLevel)
     .slice()
@@ -544,6 +548,25 @@ function renderLogs() {
 
     meta.append(levelLabel, timestamp);
     item.append(meta, message, model);
+    if (log.details) {
+      const { apiError, ...diagnostics } = log.details;
+      if (apiError) {
+        const apiErrorContent = document.createElement("pre");
+        apiErrorContent.className = "log-api-error";
+        apiErrorContent.textContent = apiError;
+        item.appendChild(apiErrorContent);
+      }
+      const details = document.createElement("details");
+      details.className = "log-details";
+      details.dataset.logKey = JSON.stringify([log.timestamp, log.event, log.model]);
+      details.open = expandedLogs.has(details.dataset.logKey);
+      const summary = document.createElement("summary");
+      summary.textContent = "错误详情";
+      const content = document.createElement("pre");
+      content.textContent = JSON.stringify(diagnostics, null, 2);
+      details.append(summary, content);
+      item.appendChild(details);
+    }
     runtimeLogsList.appendChild(item);
   }
 }
