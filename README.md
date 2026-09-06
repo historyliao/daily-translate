@@ -24,7 +24,7 @@ Daily Translate 是一款本地运行、数据私有、完全自主控制的开�
 
 填写翻译服务配置并保存：
 
-- `Base URL`：OpenAI-compatible API 的版本根地址，例如 `https://api.openai.com/v1`。
+- `Base URL`：兼容 OpenAI Chat Completions API 的服务地址，例如 `https://api.deepseek.com`。插件会请求该地址下的 `/chat/completions` 接口，不支持 Responses API。
 - `Token`：API 访问令牌。
 - `Model`：模型名称，例如服务商提供的模型标识。
 - `模型参数（JSON）`：可选，填写模型或服务商支持的 Chat Completions 参数，例如 `temperature`、`top_p`、`max_tokens`、`reasoning_effort` 或 `thinking`；留空时由 API 使用默认值。
