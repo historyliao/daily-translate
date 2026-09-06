@@ -3,8 +3,6 @@
   const overlayAttribute = "data-english-to-chinese-translator";
   const pageTranslationExcludedSelector = "script, style, noscript, input, textarea, select, option, code, pre, kbd, samp, svg, canvas, iframe";
   const pageTranslationScanDelay = 300;
-  const pageTranslationMaxItems = 50;
-  const pageTranslationMaxCharacters = 3000;
   const fullPageParagraphMaxItems = 128;
   const fullPageParagraphMaxCharacters = 12000;
   const defaultTranslationMode = "selection";
@@ -36,7 +34,6 @@
   let pageTranslationProcessing = false;
   let pageTranslationPaused = false;
   let pageTranslationFeedback = null;
-  let pageTranslationFeedbackTimer = null;
   let pageTranslationHighlightFrame = null;
   let pageTranslationHighlightedRecords = [];
   const pageTranslationRecords = new Map();
@@ -184,22 +181,16 @@
     const observerOptions = {
       childList: true,
       characterData: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "hidden", "aria-hidden", "open", "contenteditable"]
     };
-    if (translationMode === "page") {
-      observerOptions.attributes = true;
-      observerOptions.attributeFilter = ["class", "style", "hidden", "aria-hidden", "open", "contenteditable"];
-    }
     pageTranslationObserver.observe(document.documentElement, observerOptions);
-    if (translationMode === "page") {
-      scanPageTranslationSubtree(document.body || document.documentElement);
-      if (pageTranslationQueue.length > 0) {
-        processPageTranslationQueue();
-      } else {
-        showPageTranslationIdleState();
-      }
+    scanPageTranslationSubtree(document.body || document.documentElement);
+    if (pageTranslationQueue.length > 0) {
+      processPageTranslationQueue();
     } else {
-      schedulePageTranslationScan(0);
+      showPageTranslationIdleState();
     }
   }
 
@@ -276,21 +267,17 @@
 
     pageTranslationSuspended = false;
     pageTranslationSessionId += 1;
-    if (translationMode === "page") {
-      clearTimeout(pageTranslationScanTimer);
-      pageTranslationScanTimer = null;
-      if (pageTranslationChangedRoots.size > 0) {
-        flushPageTranslationChanges();
-      } else {
-        scanPageTranslationSubtree(document.body || document.documentElement);
-        if (pageTranslationQueue.length > 0) {
-          processPageTranslationQueue();
-        } else {
-          showPageTranslationIdleState();
-        }
-      }
+    clearTimeout(pageTranslationScanTimer);
+    pageTranslationScanTimer = null;
+    if (pageTranslationChangedRoots.size > 0) {
+      flushPageTranslationChanges();
     } else {
-      schedulePageTranslationScan(0);
+      scanPageTranslationSubtree(document.body || document.documentElement);
+      if (pageTranslationQueue.length > 0) {
+        processPageTranslationQueue();
+      } else {
+        showPageTranslationIdleState();
+      }
     }
   }
 
@@ -302,9 +289,6 @@
         updatePageTranslationHighlights();
       });
     }
-    if (translationMode === "viewport") {
-      schedulePageTranslationScan();
-    }
   }
 
   function handlePageHide() {
@@ -313,41 +297,9 @@
     stopPageTranslation();
   }
 
-  function schedulePageTranslationScan(delay = pageTranslationScanDelay) {
-    if (!pageTranslationEnabled || pageTranslationSuspended || !isActiveTranslationTab) {
-      return;
-    }
-    clearTimeout(pageTranslationScanTimer);
-    pageTranslationScanTimer = setTimeout(scanVisibleText, delay);
-  }
-
-  function scanVisibleText() {
-    pageTranslationScanTimer = null;
-    if (!pageTranslationEnabled || pageTranslationSuspended || !isActiveTranslationTab) {
-      return;
-    }
-
-    for (const node of pageTranslationRecords.keys()) {
-      if (!node.isConnected) {
-        pageTranslationRecords.delete(node);
-      }
-    }
-
-    const walker = document.createTreeWalker(
-      document.body || document.documentElement,
-      NodeFilter.SHOW_TEXT
-    );
-    let node;
-    while ((node = walker.nextNode())) {
-      collectPageTranslationNode(node, isVisibleTranslatableNode);
-    }
-    processPageTranslationQueue();
-  }
-
   function scanPageTranslationSubtree(root) {
     if (
       !pageTranslationEnabled ||
-      translationMode !== "page" ||
       !root.isConnected
     ) {
       return;
@@ -417,20 +369,15 @@
       node,
       originalValue,
       sourceText,
-      status: translationMode !== "page" && sourceText.length > pageTranslationMaxCharacters
-        ? "failed" : "waiting"
+      status: "waiting"
     };
-    if (translationMode === "page") {
-      record.paragraphRoot = getPageTranslationParagraphRoot(node);
-      if (!pageTranslationParagraphIds.has(record.paragraphRoot)) {
-        pageTranslationParagraphIds.set(record.paragraphRoot, String(++pageTranslationParagraphId));
-      }
-      record.paragraphId = pageTranslationParagraphIds.get(record.paragraphRoot);
+    record.paragraphRoot = getPageTranslationParagraphRoot(node);
+    if (!pageTranslationParagraphIds.has(record.paragraphRoot)) {
+      pageTranslationParagraphIds.set(record.paragraphRoot, String(++pageTranslationParagraphId));
     }
+    record.paragraphId = pageTranslationParagraphIds.get(record.paragraphRoot);
     pageTranslationRecords.set(node, record);
-    if (record.status === "waiting") {
-      pageTranslationQueue.push(record);
-    }
+    pageTranslationQueue.push(record);
   }
 
   function getPageTranslationParagraphRoot(node) {
@@ -468,43 +415,6 @@
       });
     }
     return fragments;
-  }
-
-  function isVisibleTranslatableNode(node) {
-    const parent = node.parentElement;
-    const text = node.nodeValue.trim();
-    if (
-      !parent ||
-      !text ||
-      !/\p{L}/u.test(text) ||
-      parent.closest(pageTranslationExcludedSelector) ||
-      parent.closest(`[${overlayAttribute}]`) ||
-      parent.closest('[aria-hidden="true"]') ||
-      parent.isContentEditable
-    ) {
-      return false;
-    }
-
-    const style = getComputedStyle(parent);
-    if (
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      style.visibility === "collapse" ||
-      Number.parseFloat(style.opacity) === 0
-    ) {
-      return false;
-    }
-
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    return Array.from(range.getClientRects()).some((rect) => (
-      rect.width > 0 &&
-      rect.height > 0 &&
-      rect.bottom > 0 &&
-      rect.right > 0 &&
-      rect.top < window.innerHeight &&
-      rect.left < window.innerWidth
-    ));
   }
 
   function isRenderedTranslatableNode(node, requireLetters = true) {
@@ -559,51 +469,34 @@
       return;
     }
 
-    if (translationMode === "page") {
-      for (const mutation of mutations) {
-        if (mutation.type === "characterData") {
-          const record = pageTranslationRecords.get(mutation.target);
-          if (record && (
-            mutation.target.nodeValue === record.translatedValue ||
-            (record.status !== "translated" && mutation.target.nodeValue === record.originalValue)
-          )) {
-            continue;
-          }
-          pageTranslationRecords.delete(mutation.target);
-          pageTranslationChangedRoots.add(mutation.target);
-        } else if (mutation.type === "childList") {
-          for (const node of mutation.removedNodes) {
-            removePageTranslationSubtreeRecords(node);
-          }
-          for (const node of mutation.addedNodes) {
-            pageTranslationChangedRoots.add(node);
-          }
-        } else if (mutation.type === "attributes") {
-          pageTranslationChangedRoots.add(mutation.target);
-        }
-      }
-      if (
-        !pageTranslationSuspended && isActiveTranslationTab &&
-        pageTranslationChangedRoots.size > 0 && pageTranslationScanTimer === null
-      ) {
-        pageTranslationScanTimer = setTimeout(flushPageTranslationChanges, pageTranslationScanDelay);
-      }
-      return;
-    }
-
     for (const mutation of mutations) {
-      if (mutation.type !== "characterData") {
-        continue;
-      }
-      const record = pageTranslationRecords.get(mutation.target);
-      if (record &&
-        mutation.target.nodeValue !== record.translatedValue &&
-        (record.status === "translated" || mutation.target.nodeValue !== record.originalValue)
-      ) {
+      if (mutation.type === "characterData") {
+        const record = pageTranslationRecords.get(mutation.target);
+        if (record && (
+          mutation.target.nodeValue === record.translatedValue ||
+          (record.status !== "translated" && mutation.target.nodeValue === record.originalValue)
+        )) {
+          continue;
+        }
         pageTranslationRecords.delete(mutation.target);
+        pageTranslationChangedRoots.add(mutation.target);
+      } else if (mutation.type === "childList") {
+        for (const node of mutation.removedNodes) {
+          removePageTranslationSubtreeRecords(node);
+        }
+        for (const node of mutation.addedNodes) {
+          pageTranslationChangedRoots.add(node);
+        }
+      } else if (mutation.type === "attributes") {
+        pageTranslationChangedRoots.add(mutation.target);
       }
     }
-    schedulePageTranslationScan();
+    if (
+      !pageTranslationSuspended && isActiveTranslationTab &&
+      pageTranslationChangedRoots.size > 0 && pageTranslationScanTimer === null
+    ) {
+      pageTranslationScanTimer = setTimeout(flushPageTranslationChanges, pageTranslationScanDelay);
+    }
   }
 
   function removePageTranslationSubtreeRecords(root) {
@@ -644,14 +537,9 @@
 
     pageTranslationProcessing = true;
     const sessionId = pageTranslationSessionId;
-    const startedAt = performance.now();
-    const translationScopeLabel = translationMode === "page"
-      ? "整个页面"
-      : "当前区域";
     let translatedCount = 0;
     let failedCount = 0;
     let totalCount = pageTranslationQueue.length;
-    let translationFailed = false;
     let batchStatus = "正在请求";
     const activeRecords = new Set();
     const showProgress = () => {
@@ -662,7 +550,7 @@
       const failedText = failedCount > 0 ? ` · 失败 ${failedCount} 段` : "";
       showPageTranslationFeedback(
         "translating",
-        `正在翻译${translationScopeLabel} · ${batchStatus} · 待处理 ${pageTranslationQueue.length} 段 · 已显示 ${translatedCount}/${totalCount} 段${failedText}`,
+        `正在翻译整个页面 · ${batchStatus} · 待处理 ${pageTranslationQueue.length} 段 · 已显示 ${translatedCount}/${totalCount} 段${failedText}`,
         Array.from(activeRecords)
       );
     };
@@ -678,11 +566,9 @@
           break;
         }
         if (
-          translationMode === "page" &&
-          (batch.length > fullPageParagraphMaxItems ||
-            batch.reduce((total, record) => total + record.sourceText.length, 0) > fullPageParagraphMaxCharacters)
+          batch.length > fullPageParagraphMaxItems ||
+          batch.reduce((total, record) => total + record.sourceText.length, 0) > fullPageParagraphMaxCharacters
         ) {
-          translationFailed = true;
           failedCount += batch.length;
           pageTranslationPaused = true;
           for (const record of batch) {
@@ -727,7 +613,7 @@
           ) {
             return;
           }
-          if (translationMode === "page" && translations.length !== batch.length) {
+          if (translations.length !== batch.length) {
             throw new Error("INVALID_RESPONSE");
           }
         } catch (error) {
@@ -737,7 +623,6 @@
           ) {
             return;
           }
-          translationFailed = true;
           failedCount += batch.length;
           console.error("Failed to translate page content", error);
           for (const record of batch) {
@@ -745,9 +630,7 @@
               record.status = "failed";
             }
           }
-          if (translationMode === "page") {
-            pageTranslationPaused = true;
-          }
+          pageTranslationPaused = true;
         } finally {
           for (const record of batch) {
             activeRecords.delete(record);
@@ -772,64 +655,19 @@
     } finally {
       if (sessionId === pageTranslationSessionId) {
         pageTranslationProcessing = false;
-        if (translationMode === "page") {
-          showPageTranslationIdleState();
-        } else if (translationFailed) {
-          showPageTranslationFailureNotice(translatedCount);
-        } else if (translatedCount > 0) {
-          const elapsedSeconds = Math.max(
-            0.1,
-            (performance.now() - startedAt) / 1000
-          ).toFixed(1);
-          showPageTranslationFeedback(
-            "completed",
-            `${translationScopeLabel}翻译完成 · ${translatedCount} 段 · ${elapsedSeconds} 秒`
-          );
-        }
+        showPageTranslationIdleState();
       }
     }
   }
 
   function takePageTranslationBatch() {
-    if (translationMode === "page") {
-      const batch = [];
-      let paragraphId = null;
-      while (pageTranslationQueue.length > 0) {
-        const record = pageTranslationQueue[0];
-        if (
-          pageTranslationRecords.get(record.node) !== record || record.status !== "waiting" ||
-          record.node.nodeValue !== record.originalValue || !isRenderedTranslatableNode(record.node)
-        ) {
-          pageTranslationQueue.shift();
-          if (pageTranslationRecords.get(record.node) === record) {
-            pageTranslationRecords.delete(record.node);
-          }
-          continue;
-        }
-        if (paragraphId !== null && record.paragraphId !== paragraphId) {
-          break;
-        }
-        paragraphId = record.paragraphId;
-        pageTranslationQueue.shift();
-        batch.push(record);
-      }
-      batch.sort((left, right) => {
-        const position = left.node.compareDocumentPosition(right.node);
-        return position & Node.DOCUMENT_POSITION_PRECEDING
-          ? 1
-          : position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 0;
-      });
-      return batch;
-    }
     const batch = [];
-    let characterCount = 0;
-    while (pageTranslationQueue.length > 0 && batch.length < pageTranslationMaxItems) {
+    let paragraphId = null;
+    while (pageTranslationQueue.length > 0) {
       const record = pageTranslationQueue[0];
       if (
-        pageTranslationRecords.get(record.node) !== record ||
-        record.status !== "waiting" ||
-        record.node.nodeValue !== record.originalValue ||
-        !isVisibleTranslatableNode(record.node)
+        pageTranslationRecords.get(record.node) !== record || record.status !== "waiting" ||
+        record.node.nodeValue !== record.originalValue || !isRenderedTranslatableNode(record.node)
       ) {
         pageTranslationQueue.shift();
         if (pageTranslationRecords.get(record.node) === record) {
@@ -837,16 +675,19 @@
         }
         continue;
       }
-      if (
-        batch.length > 0 &&
-        characterCount + record.sourceText.length > pageTranslationMaxCharacters
-      ) {
+      if (paragraphId !== null && record.paragraphId !== paragraphId) {
         break;
       }
+      paragraphId = record.paragraphId;
       pageTranslationQueue.shift();
       batch.push(record);
-      characterCount += record.sourceText.length;
     }
+    batch.sort((left, right) => {
+      const position = left.node.compareDocumentPosition(right.node);
+      return position & Node.DOCUMENT_POSITION_PRECEDING
+        ? 1
+        : position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 0;
+    });
     return batch;
   }
 
@@ -921,7 +762,7 @@
           }
         } else if (message?.type === "batch" && Array.isArray(message.items)) {
           try {
-            if (translationMode === "page" && message.items.length !== batch.length) {
+            if (message.items.length !== batch.length) {
               throw new Error("INVALID_RESPONSE");
             }
             const count = applyPageTranslations(batch, message.items);
@@ -958,17 +799,15 @@
       try {
         const paragraphs = [];
         let contextCharacters = 0;
-        if (translationMode === "page") {
-          for (const paragraphRoot of new Set(batch.map((record) => record.paragraphRoot))) {
-            const records = batch.filter((record) => record.paragraphRoot === paragraphRoot);
-            const requestedNodes = new Set(records.map((record) => record.node));
-            const fragments = getPageTranslationParagraphContext(paragraphRoot);
-            if (fragments.some((fragment) => fragment.text.trim() && !requestedNodes.has(fragment.node))) {
-              const context = fragments.map((fragment) => fragment.text).join("");
-              if (contextCharacters + context.length <= fullPageParagraphMaxCharacters) {
-                paragraphs.push({ id: records[0].paragraphId, text: context });
-                contextCharacters += context.length;
-              }
+        for (const paragraphRoot of new Set(batch.map((record) => record.paragraphRoot))) {
+          const records = batch.filter((record) => record.paragraphRoot === paragraphRoot);
+          const requestedNodes = new Set(records.map((record) => record.node));
+          const fragments = getPageTranslationParagraphContext(paragraphRoot);
+          if (fragments.some((fragment) => fragment.text.trim() && !requestedNodes.has(fragment.node))) {
+            const context = fragments.map((fragment) => fragment.text).join("");
+            if (contextCharacters + context.length <= fullPageParagraphMaxCharacters) {
+              paragraphs.push({ id: records[0].paragraphId, text: context });
+              contextCharacters += context.length;
             }
           }
         }
@@ -1014,7 +853,7 @@
       const wasTranslated = record.status === "translated";
       if (
         pageTranslationRecords.get(record.node) !== record ||
-        (translationMode === "page" && !record.node.isConnected) ||
+        !record.node.isConnected ||
         record.node.nodeValue !== (wasTranslated ? record.translatedValue : record.originalValue)
       ) {
         throw new Error("PAGE_CONTENT_CHANGED");
@@ -1031,19 +870,6 @@
       translatedCount += wasTranslated ? 0 : 1;
     }
     return translatedCount;
-  }
-
-  function showPageTranslationFailureNotice(translatedCount) {
-    if (pageTranslationProcessing || pageTranslationRequests.size > 0) {
-      return;
-    }
-    const completedText = translatedCount > 0
-      ? ` · 已翻译 ${translatedCount} 段`
-      : "";
-    showPageTranslationFeedback(
-      "error",
-      `部分内容翻译失败${completedText}，可关闭后重试`
-    );
   }
 
   function showPageTranslationIdleState() {
@@ -1080,8 +906,6 @@
   }
 
   function showPageTranslationFeedback(state, message, records = []) {
-    clearTimeout(pageTranslationFeedbackTimer);
-    pageTranslationFeedbackTimer = null;
     pageTranslationHighlightedRecords = records;
 
     if (!pageTranslationFeedback) {
@@ -1209,14 +1033,6 @@
     pageTranslationFeedback.icon.textContent = state === "completed" ? "✓" : "!";
     pageTranslationFeedback.text.textContent = message;
     updatePageTranslationHighlights();
-
-    const hideDelay = state === "completed" && translationMode !== "page" ? 1500 : 0;
-    if (hideDelay > 0) {
-      pageTranslationFeedbackTimer = setTimeout(
-        removePageTranslationFeedback,
-        hideDelay
-      );
-    }
   }
 
   function updatePageTranslationHighlights() {
@@ -1257,8 +1073,6 @@
   }
 
   function removePageTranslationFeedback() {
-    clearTimeout(pageTranslationFeedbackTimer);
-    pageTranslationFeedbackTimer = null;
     if (pageTranslationHighlightFrame !== null) {
       cancelAnimationFrame(pageTranslationHighlightFrame);
       pageTranslationHighlightFrame = null;
@@ -1664,9 +1478,7 @@
     if (!translationEnabled) {
       closeOverlay();
       stopPageTranslation();
-    } else if (
-      (translationMode === "viewport" || translationMode === "page")
-    ) {
+    } else if (translationMode === "page") {
       closeOverlay();
       if (isActiveTranslationTab) {
         startPageTranslation();
@@ -1679,7 +1491,7 @@
   }
 
   function getTranslationMode(value) {
-    return ["viewport", "page"].includes(value) ? value : defaultTranslationMode;
+    return value === "page" ? value : defaultTranslationMode;
   }
 
   function getPageTranslationDocumentUrl(value) {

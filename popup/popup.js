@@ -18,7 +18,7 @@ const TARGET_LANGUAGES = new Set([
   "zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de",
   "es", "pt", "it", "ru", "ar", "hi"
 ]);
-const TRANSLATION_MODES = new Set(["selection", "viewport", "page"]);
+const TRANSLATION_MODES = new Set(["selection", "page"]);
 const numberFormatter = new Intl.NumberFormat("zh-CN");
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",

@@ -143,7 +143,7 @@ button:focus-visible {
 }
 
 .setting-row select:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.6;
 }
 
