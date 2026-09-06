@@ -77,9 +77,9 @@ iframe 不在顶层 Content Script 的处理范围内。尚未加入 DOM 的内�
 
 每次 API 调用持有独立网络 AbortController，批次取消向当前调用传播；调用超时或失败仅中止该调用，保留原始错误分类，不误取消后续补译。异常路径在写监控前中止网络，finally 再确保清理连接、计时器和取消监听；流式读取退出时释放 reader 锁。批次顶层失败也会中止批次控制器后再向页面报告错误。
 
-官方 DeepSeek V4 默认开启思考模式。对 `api.deepseek.com` 的 `deepseek-v4-flash` 和 `deepseek-v4-pro` 翻译请求显式设置 `thinking: {type: "disabled"}`；其他服务及模型不附加专用参数。不新增扩展权限或 API 配置。依据：[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)。
+模型参数由设置页的 `modelParameters` JSON 对象提供，统一合并到划词、整页和段落补译请求。插件不再固定发送 `temperature` 或 DeepSeek `thinking`；用户可按模型文档配置这些参数来权衡速度、质量和输出长度。`model`、`messages`、`stream`、`stream_options` 与 `response_format` 仍由插件管理，不能被模型参数覆盖。
 
-上述官方 DeepSeek V4 的批量翻译额外启用 `response_format: {type: "json_object"}`，划词请求不启用。JSON 输出仍需校验条目数、ID 唯一性及非空译文，不通过位置猜测对应关系。错误日志区分 API 响应格式、空响应、批量 JSON、条目数、ID、空译文及 `finish_reason=length` 导致的输出截断，并提供可展开的请求阶段、HTTP 状态及校验详情。API 报错直接展示 HTTP 错误正文或响应中的 `error` 内容，脱敏当前 Token 和 Bearer 凭据，超过 8192 字符时截断并标注；不主动记录原文、译文或思考内容，但服务端错误可能回显请求文本。依据：[DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode)。
+官方 DeepSeek V4 的批量翻译由插件启用 `response_format: {type: "json_object"}`，划词请求不启用。JSON 输出仍需校验条目数、ID 唯一性及非空译文，不通过位置猜测对应关系。错误日志区分 API 响应格式、空响应、批量 JSON、条目数、ID、空译文及 `finish_reason=length` 导致的输出截断，并提供可展开的请求阶段、HTTP 状态及校验详情。API 报错直接展示 HTTP 错误正文或响应中的 `error` 内容，脱敏当前 Token 和 Bearer 凭据，超过 8192 字符时截断并标注；不主动记录原文、译文或思考内容，但服务端错误可能回显请求文本。依据：[DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode)。
 
 整页模式复用现有进度浮层和当前批次文本高亮。屏幕外文本没有可见矩形时不绘制高亮，但仍参与翻译和进度统计。
 

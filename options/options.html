@@ -23,6 +23,10 @@
         <label for="model">Model</label>
         <input id="model" name="model" type="text" placeholder="请输入模型名称" required>
 
+        <label for="model-parameters">模型参数（JSON，可选）</label>
+        <textarea id="model-parameters" name="model-parameters" rows="7" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "reasoning_effort": "low"&#10;}'></textarea>
+        <p class="help">支持模型或服务商提供的 Chat Completions 参数。model、messages、stream、stream_options 和 response_format 由插件管理。</p>
+
         <label class="toggle" for="stream-enabled">
           <input id="stream-enabled" name="stream-enabled" type="checkbox">
           <span>启用流式响应</span>
