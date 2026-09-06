@@ -120,7 +120,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendMessageToActiveTab({ type: "get-translation-mode" })
       .then((response) => sendResponse({
         ok: true,
-        mode: ["selection", "viewport", "page"].includes(response?.mode)
+        mode: ["selection", "page"].includes(response?.mode)
           ? response.mode
           : "selection"
       }))
@@ -130,7 +130,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (
     message.type === "set-active-tab-translation-mode" &&
-    ["selection", "viewport", "page"].includes(message.mode)
+    ["selection", "page"].includes(message.mode)
   ) {
     sendMessageToActiveTab({ type: "set-translation-mode", mode: message.mode })
       .then(() => sendResponse({ ok: true, mode: message.mode }))
