@@ -523,6 +523,27 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.log-details {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.log-details summary {
+  cursor: pointer;
+}
+
+.log-api-error,
+.log-details pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-api-error {
+  font-size: 11px;
+}
+
 .error {
   min-height: 18px;
   margin: 10px 0 0;

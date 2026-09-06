@@ -1,10 +1,12 @@
 (() => {
   const activationEventName = "english-to-chinese-translator:activate";
   const overlayAttribute = "data-english-to-chinese-translator";
-  const pageTranslationExcludedSelector = "script, style, noscript, input, textarea, select, option, code, pre, kbd, samp, svg, canvas";
+  const pageTranslationExcludedSelector = "script, style, noscript, input, textarea, select, option, code, pre, kbd, samp, svg, canvas, iframe";
   const pageTranslationScanDelay = 300;
   const pageTranslationMaxItems = 50;
   const pageTranslationMaxCharacters = 3000;
+  const fullPageParagraphMaxItems = 128;
+  const fullPageParagraphMaxCharacters = 12000;
   const defaultTranslationMode = "selection";
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let active = true;
@@ -22,20 +24,25 @@
   let translationContent = "";
   let translationEnabled;
   let translationMode = defaultTranslationMode;
+  let isActiveTranslationTab = false;
+  let activeTranslationStateVersion = 0;
   let pageTranslationEnabled = false;
   let pageTranslationSessionId = 0;
   let pageTranslationItemId = 0;
-  let pageTranslationPort = null;
   let pageTranslationScanTimer = null;
   let pageTranslationObserver = null;
   let pageTranslationProcessing = false;
-  let pageTranslationFailureShown = false;
+  let pageTranslationPaused = false;
   let pageTranslationFeedback = null;
   let pageTranslationFeedbackTimer = null;
   let pageTranslationHighlightFrame = null;
   let pageTranslationHighlightedRecords = [];
   const pageTranslationRecords = new Map();
   const pageTranslationQueue = [];
+  const pageTranslationChangedRoots = new Set();
+  const pageTranslationRequests = new Map();
+  const pageTranslationParagraphIds = new WeakMap();
+  let pageTranslationParagraphId = 0;
   const staleOverlayObserver = new MutationObserver(handleOverlayMutations);
 
   document.addEventListener(activationEventName, handleContentScriptActivate, true);
@@ -47,6 +54,7 @@
   window.addEventListener("scroll", handleViewportChange, true);
   window.addEventListener("resize", handleViewportChange);
   window.addEventListener("pagehide", handlePageHide);
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   chrome.storage.onChanged.addListener(handleStorageChange);
 
   loadTranslationSettings();
@@ -163,18 +171,32 @@
     }
 
     pageTranslationEnabled = true;
+    pageTranslationPaused = false;
     pageTranslationSessionId += 1;
     pageTranslationItemId = 0;
-    pageTranslationFailureShown = false;
     closeOverlay();
     removePageTranslationFeedback();
     pageTranslationObserver = new MutationObserver(handlePageTranslationMutations);
-    pageTranslationObserver.observe(document.documentElement, {
+    const observerOptions = {
       childList: true,
       characterData: true,
       subtree: true
-    });
-    schedulePageTranslationScan(0);
+    };
+    if (translationMode === "page") {
+      observerOptions.attributes = true;
+      observerOptions.attributeFilter = ["class", "style", "hidden", "aria-hidden", "open", "contenteditable"];
+    }
+    pageTranslationObserver.observe(document.documentElement, observerOptions);
+    if (translationMode === "page") {
+      scanPageTranslationSubtree(document.body || document.documentElement);
+      if (pageTranslationQueue.length > 0) {
+        processPageTranslationQueue();
+      } else {
+        showPageTranslationIdleState();
+      }
+    } else {
+      schedulePageTranslationScan(0);
+    }
   }
 
   function stopPageTranslation() {
@@ -187,18 +209,18 @@
     }
 
     pageTranslationEnabled = false;
+    pageTranslationPaused = false;
     pageTranslationSessionId += 1;
     pageTranslationProcessing = false;
     clearTimeout(pageTranslationScanTimer);
     pageTranslationScanTimer = null;
+    pageTranslationChangedRoots.clear();
     if (pageTranslationObserver) {
       pageTranslationObserver.disconnect();
       pageTranslationObserver = null;
     }
-    if (pageTranslationPort) {
-      const port = pageTranslationPort;
-      pageTranslationPort = null;
-      disconnectPort(port);
+    for (const cancelRequest of pageTranslationRequests.values()) {
+      cancelRequest();
     }
     pageTranslationQueue.length = 0;
     for (const [node, record] of pageTranslationRecords) {
@@ -222,7 +244,9 @@
         updatePageTranslationHighlights();
       });
     }
-    schedulePageTranslationScan();
+    if (translationMode === "viewport") {
+      schedulePageTranslationScan();
+    }
   }
 
   function handlePageHide() {
@@ -256,25 +280,132 @@
     );
     let node;
     while ((node = walker.nextNode())) {
-      if (pageTranslationRecords.has(node) || !isVisibleTranslatableNode(node)) {
-        continue;
-      }
-
-      const originalValue = node.nodeValue;
-      const sourceText = originalValue.trim();
-      const record = {
-        id: String(++pageTranslationItemId),
-        node,
-        originalValue,
-        sourceText,
-        status: sourceText.length > pageTranslationMaxCharacters ? "failed" : "waiting"
-      };
-      pageTranslationRecords.set(node, record);
-      if (record.status === "waiting") {
-        pageTranslationQueue.push(record);
-      }
+      collectPageTranslationNode(node, isVisibleTranslatableNode);
     }
     processPageTranslationQueue();
+  }
+
+  function scanPageTranslationSubtree(root) {
+    if (
+      !pageTranslationEnabled ||
+      translationMode !== "page" ||
+      !root.isConnected
+    ) {
+      return;
+    }
+
+    if (root.nodeType === Node.TEXT_NODE) {
+      collectPageTranslationNode(root, isRenderedTranslatableNode);
+    } else {
+      if (root.nodeType !== Node.ELEMENT_NODE || root.closest(`[${overlayAttribute}], ${pageTranslationExcludedSelector}`)) {
+        return;
+      }
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+              return NodeFilter.FILTER_ACCEPT;
+            }
+            return node.matches(`[${overlayAttribute}], ${pageTranslationExcludedSelector}`)
+              ? NodeFilter.FILTER_REJECT
+              : NodeFilter.FILTER_SKIP;
+          }
+        }
+      );
+      let node;
+      while ((node = walker.nextNode())) {
+        collectPageTranslationNode(node, isRenderedTranslatableNode);
+      }
+    }
+  }
+
+  function flushPageTranslationChanges() {
+    pageTranslationScanTimer = null;
+    const roots = new Set(pageTranslationChangedRoots);
+    pageTranslationChangedRoots.clear();
+    for (const root of roots) {
+      let ancestor = root.parentElement;
+      while (ancestor && !roots.has(ancestor)) {
+        ancestor = ancestor.parentElement;
+      }
+      if (!ancestor) {
+        scanPageTranslationSubtree(root);
+      }
+    }
+    if (pageTranslationPaused) {
+      showPageTranslationIdleState();
+    } else if (pageTranslationQueue.length > 0) {
+      processPageTranslationQueue();
+    } else if (!pageTranslationProcessing) {
+      showPageTranslationIdleState();
+    }
+  }
+
+  function collectPageTranslationNode(node, isTranslatableNode) {
+    if (pageTranslationRecords.has(node) || !isTranslatableNode(node)) {
+      return;
+    }
+
+    const originalValue = node.nodeValue;
+    const sourceText = originalValue.trim();
+    const record = {
+      id: String(++pageTranslationItemId),
+      node,
+      originalValue,
+      sourceText,
+      status: translationMode !== "page" && sourceText.length > pageTranslationMaxCharacters
+        ? "failed" : "waiting"
+    };
+    if (translationMode === "page") {
+      record.paragraphRoot = getPageTranslationParagraphRoot(node);
+      if (!pageTranslationParagraphIds.has(record.paragraphRoot)) {
+        pageTranslationParagraphIds.set(record.paragraphRoot, String(++pageTranslationParagraphId));
+      }
+      record.paragraphId = pageTranslationParagraphIds.get(record.paragraphRoot);
+    }
+    pageTranslationRecords.set(node, record);
+    if (record.status === "waiting") {
+      pageTranslationQueue.push(record);
+    }
+  }
+
+  function getPageTranslationParagraphRoot(node) {
+    let parent = node.parentElement;
+    while (parent.parentElement && parent !== document.body) {
+      if (!["inline", "contents"].includes(getComputedStyle(parent).display)) {
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    return parent;
+  }
+
+  function getPageTranslationParagraphContext(paragraphRoot) {
+    const walker = document.createTreeWalker(paragraphRoot, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        return node.matches(`${pageTranslationExcludedSelector}, [${overlayAttribute}]`) ||
+          !["inline", "contents"].includes(getComputedStyle(node).display)
+          ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+      }
+    });
+    const fragments = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!isRenderedTranslatableNode(node, false)) {
+        continue;
+      }
+      const record = pageTranslationRecords.get(node);
+      fragments.push({
+        node,
+        text: record && node.nodeValue === record.translatedValue ? record.originalValue : node.nodeValue
+      });
+    }
+    return fragments;
   }
 
   function isVisibleTranslatableNode(node) {
@@ -314,75 +445,257 @@
     ));
   }
 
+  function isRenderedTranslatableNode(node, requireLetters = true) {
+    const parent = node.parentElement;
+    const text = node.nodeValue.trim();
+    if (
+      !node.isConnected ||
+      !parent ||
+      (requireLetters && (!text || !/\p{L}/u.test(text))) ||
+      parent.closest(pageTranslationExcludedSelector) ||
+      parent.closest(`[${overlayAttribute}]`) ||
+      parent.closest('[aria-hidden="true"]') ||
+      parent.isContentEditable
+    ) {
+      return false;
+    }
+
+    const style = getComputedStyle(parent);
+    if (
+      style.visibility === "hidden" ||
+      style.visibility === "collapse"
+    ) {
+      return false;
+    }
+
+    for (let ancestor = parent; ancestor; ancestor = ancestor.parentElement) {
+      const ancestorStyle = ancestor === parent ? style : getComputedStyle(ancestor);
+      if (
+        ancestorStyle.display === "none" ||
+        ancestorStyle.contentVisibility === "hidden" ||
+        Number.parseFloat(ancestorStyle.opacity) === 0
+      ) {
+        return false;
+      }
+      if (ancestor.tagName === "DETAILS" && !ancestor.open) {
+        const summary = ancestor.querySelector(":scope > summary");
+        if (!summary?.contains(parent)) {
+          return false;
+        }
+      }
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return Array.from(range.getClientRects()).some((rect) => (
+      rect.width > 0 && rect.height > 0
+    ));
+  }
+
   function handlePageTranslationMutations(mutations) {
     if (!pageTranslationEnabled) {
       return;
     }
+
+    if (translationMode === "page") {
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") {
+          const record = pageTranslationRecords.get(mutation.target);
+          if (record && (
+            mutation.target.nodeValue === record.translatedValue ||
+            (record.status !== "translated" && mutation.target.nodeValue === record.originalValue)
+          )) {
+            continue;
+          }
+          pageTranslationRecords.delete(mutation.target);
+          pageTranslationChangedRoots.add(mutation.target);
+        } else if (mutation.type === "childList") {
+          for (const node of mutation.removedNodes) {
+            removePageTranslationSubtreeRecords(node);
+          }
+          for (const node of mutation.addedNodes) {
+            pageTranslationChangedRoots.add(node);
+          }
+        } else if (mutation.type === "attributes") {
+          pageTranslationChangedRoots.add(mutation.target);
+        }
+      }
+      if (pageTranslationChangedRoots.size > 0 && pageTranslationScanTimer === null) {
+        pageTranslationScanTimer = setTimeout(flushPageTranslationChanges, pageTranslationScanDelay);
+      }
+      return;
+    }
+
     for (const mutation of mutations) {
       if (mutation.type !== "characterData") {
         continue;
       }
       const record = pageTranslationRecords.get(mutation.target);
-      if (record && mutation.target.nodeValue !== record.translatedValue) {
+      if (record &&
+        mutation.target.nodeValue !== record.translatedValue &&
+        (record.status === "translated" || mutation.target.nodeValue !== record.originalValue)
+      ) {
         pageTranslationRecords.delete(mutation.target);
       }
     }
     schedulePageTranslationScan();
   }
 
+  function removePageTranslationSubtreeRecords(root) {
+    if (root.isConnected) {
+      return;
+    }
+
+    if (root.nodeType === Node.TEXT_NODE) {
+      const record = pageTranslationRecords.get(root);
+      if (record && root.nodeValue === record.translatedValue) {
+        root.nodeValue = record.originalValue;
+      }
+      pageTranslationRecords.delete(root);
+      return;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.isConnected) {
+        continue;
+      }
+      const record = pageTranslationRecords.get(node);
+      if (record && node.nodeValue === record.translatedValue) {
+        node.nodeValue = record.originalValue;
+      }
+      pageTranslationRecords.delete(node);
+    }
+  }
+
   async function processPageTranslationQueue() {
-    if (pageTranslationProcessing || !pageTranslationEnabled) {
+    if (pageTranslationProcessing || !pageTranslationEnabled || pageTranslationPaused) {
       return;
     }
 
     pageTranslationProcessing = true;
     const sessionId = pageTranslationSessionId;
     const startedAt = performance.now();
+    const translationScopeLabel = translationMode === "page"
+      ? "整个页面"
+      : "当前区域";
     let translatedCount = 0;
+    let failedCount = 0;
     let totalCount = pageTranslationQueue.length;
     let translationFailed = false;
-    try {
-      while (pageTranslationEnabled && sessionId === pageTranslationSessionId) {
+    let batchStatus = "正在请求";
+    const activeRecords = new Set();
+    const showProgress = () => {
+      totalCount = Math.max(
+        totalCount,
+        translatedCount + failedCount + activeRecords.size + pageTranslationQueue.length
+      );
+      const failedText = failedCount > 0 ? ` · 失败 ${failedCount} 段` : "";
+      showPageTranslationFeedback(
+        "translating",
+        `正在翻译${translationScopeLabel} · ${batchStatus} · 待处理 ${pageTranslationQueue.length} 段 · 已显示 ${translatedCount}/${totalCount} 段${failedText}`,
+        Array.from(activeRecords)
+      );
+    };
+
+    const processBatches = async () => {
+      while (
+        pageTranslationEnabled && !pageTranslationPaused &&
+        sessionId === pageTranslationSessionId
+      ) {
         const batch = takePageTranslationBatch();
         if (batch.length === 0) {
           break;
         }
-        for (const record of batch) {
-          record.status = "translating";
-        }
-        totalCount = Math.max(
-          totalCount,
-          translatedCount + batch.length + pageTranslationQueue.length
-        );
-        showPageTranslationFeedback(
-          "translating",
-          `正在翻译当前区域 · 已完成 ${translatedCount}/${totalCount} 段`,
-          batch
-        );
-
-        try {
-          const translations = await requestPageTranslationBatch(batch, sessionId);
-          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
-            return;
-          }
-          translatedCount += applyPageTranslations(batch, translations);
-        } catch (error) {
-          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
-            return;
-          }
+        if (
+          translationMode === "page" &&
+          (batch.length > fullPageParagraphMaxItems ||
+            batch.reduce((total, record) => total + record.sourceText.length, 0) > fullPageParagraphMaxCharacters)
+        ) {
           translationFailed = true;
-          console.error("Failed to translate visible page content", error);
+          failedCount += batch.length;
+          pageTranslationPaused = true;
           for (const record of batch) {
             if (pageTranslationRecords.get(record.node) === record) {
               record.status = "failed";
             }
           }
+          reportRuntimeLog("page_text_too_long");
+          break;
+        }
+        for (const record of batch) {
+          record.status = "translating";
+          activeRecords.add(record);
+        }
+        batchStatus = "正在请求";
+        showProgress();
+
+        try {
+          const translations = await requestPageTranslationBatch(batch, sessionId, (count, status) => {
+            if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+              return;
+            }
+            translatedCount += count;
+            if (status) {
+              batchStatus = status;
+            }
+            for (const record of batch) {
+              if (record.status === "translated") {
+                activeRecords.delete(record);
+              } else {
+                activeRecords.add(record);
+              }
+            }
+            showProgress();
+          });
+          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+            return;
+          }
+          if (translationMode === "page" && translations.length !== batch.length) {
+            throw new Error("INVALID_RESPONSE");
+          }
+        } catch (error) {
+          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+            return;
+          }
+          translationFailed = true;
+          failedCount += batch.length;
+          console.error("Failed to translate page content", error);
+          for (const record of batch) {
+            if (pageTranslationRecords.get(record.node) === record) {
+              record.status = "failed";
+            }
+          }
+          if (translationMode === "page") {
+            pageTranslationPaused = true;
+          }
+        } finally {
+          for (const record of batch) {
+            activeRecords.delete(record);
+          }
+          if (
+            pageTranslationEnabled && !pageTranslationPaused &&
+            sessionId === pageTranslationSessionId &&
+            (activeRecords.size > 0 || pageTranslationQueue.length > 0)
+          ) {
+            showProgress();
+          }
+        }
+        if (pageTranslationPaused) {
+          break;
         }
       }
+    };
+
+    try {
+      await processBatches();
     } finally {
       if (sessionId === pageTranslationSessionId) {
         pageTranslationProcessing = false;
-        if (translationFailed) {
+        if (translationMode === "page") {
+          showPageTranslationIdleState();
+        } else if (translationFailed) {
           showPageTranslationFailureNotice(translatedCount);
         } else if (translatedCount > 0) {
           const elapsedSeconds = Math.max(
@@ -391,7 +704,7 @@
           ).toFixed(1);
           showPageTranslationFeedback(
             "completed",
-            `当前区域翻译完成 · ${translatedCount} 段 · ${elapsedSeconds} 秒`
+            `${translationScopeLabel}翻译完成 · ${translatedCount} 段 · ${elapsedSeconds} 秒`
           );
         }
       }
@@ -399,6 +712,36 @@
   }
 
   function takePageTranslationBatch() {
+    if (translationMode === "page") {
+      const batch = [];
+      let paragraphId = null;
+      while (pageTranslationQueue.length > 0) {
+        const record = pageTranslationQueue[0];
+        if (
+          pageTranslationRecords.get(record.node) !== record || record.status !== "waiting" ||
+          record.node.nodeValue !== record.originalValue || !isRenderedTranslatableNode(record.node)
+        ) {
+          pageTranslationQueue.shift();
+          if (pageTranslationRecords.get(record.node) === record) {
+            pageTranslationRecords.delete(record.node);
+          }
+          continue;
+        }
+        if (paragraphId !== null && record.paragraphId !== paragraphId) {
+          break;
+        }
+        paragraphId = record.paragraphId;
+        pageTranslationQueue.shift();
+        batch.push(record);
+      }
+      batch.sort((left, right) => {
+        const position = left.node.compareDocumentPosition(right.node);
+        return position & Node.DOCUMENT_POSITION_PRECEDING
+          ? 1
+          : position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 0;
+      });
+      return batch;
+    }
     const batch = [];
     let characterCount = 0;
     while (pageTranslationQueue.length > 0 && batch.length < pageTranslationMaxItems) {
@@ -428,22 +771,43 @@
     return batch;
   }
 
-  function requestPageTranslationBatch(batch, sessionId) {
+  function requestPageTranslationBatch(batch, sessionId, onProgress) {
     return new Promise((resolve, reject) => {
       let port;
       let responseItems = null;
       let settled = false;
+      const appliedIds = new Set();
+      const restorePreviews = () => {
+        let restoredCount = 0;
+        for (const record of batch) {
+          if (!appliedIds.has(record.id)) {
+            continue;
+          }
+          if (
+            pageTranslationRecords.get(record.node) === record &&
+            record.node.nodeValue === record.translatedValue
+          ) {
+            record.status = "translating";
+            record.node.nodeValue = record.originalValue;
+            delete record.translatedValue;
+          }
+          appliedIds.delete(record.id);
+          restoredCount += 1;
+        }
+        if (restoredCount > 0) {
+          onProgress(-restoredCount);
+        }
+      };
 
       const finish = (error) => {
         if (settled) {
           return;
         }
         settled = true;
-        if (pageTranslationPort === port) {
-          pageTranslationPort = null;
-        }
+        pageTranslationRequests.delete(port);
         disconnectPort(port);
         if (error) {
+          restorePreviews();
           reject(error);
         } else {
           resolve(responseItems);
@@ -457,14 +821,43 @@
         reject(error);
         return;
       }
-      pageTranslationPort = port;
+      pageTranslationRequests.set(port, () => finish(new Error("CANCELED")));
 
       port.onMessage.addListener((message) => {
         if (settled || sessionId !== pageTranslationSessionId) {
           return;
         }
-        if (message?.type === "batch" && Array.isArray(message.items)) {
-          responseItems = message.items;
+        if (message?.type === "batch-chunk" && Array.isArray(message.items)) {
+          try {
+            if (batch.length !== 1 || message.items.length !== 1) {
+              throw new Error("INVALID_RESPONSE");
+            }
+            const count = applyPageTranslations(batch, message.items);
+            if (batch[0].status === "translated") {
+              appliedIds.add(batch[0].id);
+            }
+            onProgress(count);
+          } catch (error) {
+            finish(error);
+          }
+        } else if (message?.type === "batch" && Array.isArray(message.items)) {
+          try {
+            if (translationMode === "page" && message.items.length !== batch.length) {
+              throw new Error("INVALID_RESPONSE");
+            }
+            const count = applyPageTranslations(batch, message.items);
+            for (const record of batch) {
+              if (record.status === "translated") {
+                appliedIds.add(record.id);
+              }
+            }
+            responseItems = message.items;
+            onProgress(count);
+          } catch (error) {
+            finish(error);
+          }
+        } else if (message?.type === "batch-status" && message.stage === "retry") {
+          onProgress(0, `正在补译 ${message.current}/${message.total}`);
         } else if (message?.type === "done") {
           finish(responseItems ? null : new Error("INVALID_RESPONSE"));
         } else if (message?.type === "error") {
@@ -484,9 +877,30 @@
       });
 
       try {
+        const paragraphs = [];
+        let contextCharacters = 0;
+        if (translationMode === "page") {
+          for (const paragraphRoot of new Set(batch.map((record) => record.paragraphRoot))) {
+            const records = batch.filter((record) => record.paragraphRoot === paragraphRoot);
+            const requestedNodes = new Set(records.map((record) => record.node));
+            const fragments = getPageTranslationParagraphContext(paragraphRoot);
+            if (fragments.some((fragment) => fragment.text.trim() && !requestedNodes.has(fragment.node))) {
+              const context = fragments.map((fragment) => fragment.text).join("");
+              if (contextCharacters + context.length <= fullPageParagraphMaxCharacters) {
+                paragraphs.push({ id: records[0].paragraphId, text: context });
+                contextCharacters += context.length;
+              }
+            }
+          }
+        }
         port.postMessage({
           type: "translate-batch",
-          items: batch.map((record) => ({ id: record.id, text: record.sourceText }))
+          items: batch.map((record) => ({
+            id: record.id,
+            text: record.sourceText,
+            ...(record.paragraphId ? { paragraphId: record.paragraphId } : {})
+          })),
+          paragraphs
         });
       } catch (error) {
         reportRuntimeLog("service_connection_error");
@@ -496,7 +910,7 @@
   }
 
   function applyPageTranslations(batch, items) {
-    if (!Array.isArray(items) || items.length !== batch.length) {
+    if (!Array.isArray(items) || items.length > batch.length) {
       throw new Error("INVALID_RESPONSE");
     }
 
@@ -516,36 +930,73 @@
       translations.set(item.id, item.translation.trim());
     }
 
+    const records = batch.filter((record) => translations.has(record.id));
+    for (const record of records) {
+      const wasTranslated = record.status === "translated";
+      if (
+        pageTranslationRecords.get(record.node) !== record ||
+        (translationMode === "page" && !record.node.isConnected) ||
+        record.node.nodeValue !== (wasTranslated ? record.translatedValue : record.originalValue)
+      ) {
+        throw new Error("PAGE_CONTENT_CHANGED");
+      }
+    }
+
     let translatedCount = 0;
-    for (const record of batch) {
-      if (pageTranslationRecords.get(record.node) !== record) {
-        continue;
-      }
-      if (record.node.nodeValue !== record.originalValue) {
-        pageTranslationRecords.delete(record.node);
-        continue;
-      }
+    for (const record of records) {
+      const wasTranslated = record.status === "translated";
       const textStart = record.originalValue.indexOf(record.sourceText);
       record.translatedValue = `${record.originalValue.slice(0, textStart)}${translations.get(record.id)}${record.originalValue.slice(textStart + record.sourceText.length)}`;
       record.status = "translated";
       record.node.nodeValue = record.translatedValue;
-      translatedCount += 1;
+      translatedCount += wasTranslated ? 0 : 1;
     }
     return translatedCount;
   }
 
   function showPageTranslationFailureNotice(translatedCount) {
-    if (pageTranslationFailureShown) {
-      removePageTranslationFeedback();
+    if (pageTranslationProcessing || pageTranslationRequests.size > 0) {
       return;
     }
-    pageTranslationFailureShown = true;
     const completedText = translatedCount > 0
       ? ` · 已翻译 ${translatedCount} 段`
       : "";
     showPageTranslationFeedback(
       "error",
       `部分内容翻译失败${completedText}，可关闭后重试`
+    );
+  }
+
+  function showPageTranslationIdleState() {
+    if (!pageTranslationEnabled || pageTranslationProcessing || pageTranslationRequests.size > 0) {
+      return;
+    }
+    const translatedParagraphs = new Set();
+    const failedParagraphs = new Set();
+    for (const [node, record] of pageTranslationRecords) {
+      if (!node.isConnected) {
+        continue;
+      }
+      const paragraphId = record.paragraphId || record.id;
+      if (record.status === "translated") {
+        translatedParagraphs.add(paragraphId);
+      } else if (record.status === "failed") {
+        failedParagraphs.add(paragraphId);
+      }
+    }
+    if (pageTranslationPaused) {
+      const remainingParagraphs = new Set(pageTranslationQueue.map((record) => record.paragraphId || record.id));
+      showPageTranslationFeedback(
+        "error",
+        `翻译已暂停 · 当前段落失败 · 已翻译 ${translatedParagraphs.size} 段 · 剩余 ${remainingParagraphs.size} 段，关闭后重新开启可重试`
+      );
+      return;
+    }
+    const pendingChanges = pageTranslationQueue.length > 0 || pageTranslationChangedRoots.size > 0;
+    const status = pendingChanges ? "等待页面更新处理" : "当前无请求 · 监听页面变化";
+    showPageTranslationFeedback(
+      pendingChanges ? "translating" : failedParagraphs.size > 0 ? "error" : "completed",
+      `${status} · 已翻译 ${translatedParagraphs.size} 段${failedParagraphs.size > 0 ? ` · 失败 ${failedParagraphs.size} 段，可查看日志` : ""}`
     );
   }
 
@@ -680,7 +1131,7 @@
     pageTranslationFeedback.text.textContent = message;
     updatePageTranslationHighlights();
 
-    const hideDelay = state === "completed" ? 1500 : state === "error" ? 5000 : 0;
+    const hideDelay = state === "completed" && translationMode !== "page" ? 1500 : 0;
     if (hideDelay > 0) {
       pageTranslationFeedbackTimer = setTimeout(
         removePageTranslationFeedback,
@@ -1044,12 +1495,22 @@
     window.removeEventListener("pagehide", handlePageHide);
     staleOverlayObserver.disconnect();
     try {
+      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
       chrome.storage.onChanged.removeListener(handleStorageChange);
     } catch (error) {
       console.debug("Failed to remove translation storage listener", error);
     }
     stopPageTranslation();
     closeOverlay();
+  }
+
+  function handleRuntimeMessage(message) {
+    if (message?.type !== "active-tab-translation") {
+      return;
+    }
+    activeTranslationStateVersion += 1;
+    isActiveTranslationTab = message.active === true;
+    syncTranslationBehavior();
   }
 
   function handleStorageChange(changes, areaName) {
@@ -1061,7 +1522,11 @@
       translationEnabled = changes.translationEnabled.newValue !== false;
     }
     if (changes.translationMode) {
-      translationMode = getTranslationMode(changes.translationMode.newValue);
+      const nextTranslationMode = getTranslationMode(changes.translationMode.newValue);
+      if (translationMode !== nextTranslationMode && pageTranslationEnabled) {
+        stopPageTranslation();
+      }
+      translationMode = nextTranslationMode;
     }
 
     if (changes.translationEnabled || changes.translationMode) {
@@ -1073,17 +1538,27 @@
   }
 
   async function loadTranslationSettings() {
+    const stateVersion = activeTranslationStateVersion;
     try {
-      const settings = await chrome.storage.local.get([
-        "translationEnabled",
-        "translationMode"
+      const [settings, tabState] = await Promise.all([
+        chrome.storage.local.get([
+          "translationEnabled",
+          "translationMode"
+        ]),
+        chrome.runtime.sendMessage({ type: "get-active-tab-translation-state" })
       ]);
       translationEnabled = settings.translationEnabled !== false;
       translationMode = getTranslationMode(settings.translationMode);
+      if (stateVersion === activeTranslationStateVersion) {
+        isActiveTranslationTab = tabState?.active === true;
+      }
       syncTranslationBehavior();
     } catch (error) {
       translationEnabled = true;
       translationMode = defaultTranslationMode;
+      if (stateVersion === activeTranslationStateVersion) {
+        isActiveTranslationTab = false;
+      }
       console.error("Failed to read translation status", error);
       reportRuntimeLog("translation_state_read_failed");
     }
@@ -1093,7 +1568,10 @@
     if (!translationEnabled) {
       closeOverlay();
       stopPageTranslation();
-    } else if (translationMode === "viewport") {
+    } else if (
+      isActiveTranslationTab &&
+      (translationMode === "viewport" || translationMode === "page")
+    ) {
       closeOverlay();
       startPageTranslation();
     } else {
@@ -1102,7 +1580,7 @@
   }
 
   function getTranslationMode(value) {
-    return value === "viewport" ? value : defaultTranslationMode;
+    return ["viewport", "page"].includes(value) ? value : defaultTranslationMode;
   }
 
   function reportRuntimeLog(event) {
