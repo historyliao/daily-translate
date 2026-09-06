@@ -55,6 +55,7 @@ const runtimeLogsList = document.querySelector("#runtime-logs");
 const logsEmpty = document.querySelector("#logs-empty");
 let translationEnabled = true;
 let translationMode = DEFAULT_TRANSLATION_MODE;
+let translationModeAvailable = false;
 let targetLanguage = DEFAULT_TARGET_LANGUAGE;
 let tokenUsage = null;
 let latencyMetrics = null;
@@ -76,6 +77,10 @@ translationEnabledInput.addEventListener("change", async () => {
   try {
     await chrome.storage.local.set({ translationEnabled: nextTranslationEnabled });
     translationEnabled = nextTranslationEnabled;
+    if (!translationEnabled) {
+      translationMode = DEFAULT_TRANSLATION_MODE;
+      renderTranslationMode();
+    }
     renderTranslationState();
   } catch (error) {
     console.error("Failed to save translation status", error);
@@ -85,6 +90,7 @@ translationEnabledInput.addEventListener("change", async () => {
     errorMessage.textContent = "无法保存翻译状态，请重试";
   } finally {
     translationEnabledInput.disabled = false;
+    translationModeInput.disabled = !translationEnabled || !translationModeAvailable;
   }
 });
 
@@ -95,8 +101,14 @@ translationModeInput.addEventListener("change", async () => {
   errorMessage.textContent = "";
 
   try {
-    await chrome.storage.local.set({ translationMode: nextTranslationMode });
-    translationMode = nextTranslationMode;
+    const response = await chrome.runtime.sendMessage({
+      type: "set-active-tab-translation-mode",
+      mode: nextTranslationMode
+    });
+    if (!response?.ok) {
+      throw new Error("ACTIVE_TAB_UNAVAILABLE");
+    }
+    translationMode = getTranslationMode(response.mode);
     renderTranslationMode();
   } catch (error) {
     console.error("Failed to save translation mode", error);
@@ -105,7 +117,7 @@ translationModeInput.addEventListener("change", async () => {
     renderTranslationMode();
     errorMessage.textContent = "无法保存翻译模式，请重试";
   } finally {
-    translationModeInput.disabled = false;
+    translationModeInput.disabled = !translationEnabled || !translationModeAvailable;
   }
 });
 
@@ -118,6 +130,8 @@ targetLanguageInput.addEventListener("change", async () => {
   try {
     await chrome.storage.local.set({ targetLanguage: nextTargetLanguage });
     targetLanguage = nextTargetLanguage;
+    translationMode = DEFAULT_TRANSLATION_MODE;
+    renderTranslationMode();
     renderTargetLanguage();
   } catch (error) {
     console.error("Failed to save target language", error);
@@ -217,11 +231,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.translationEnabled) {
     translationEnabled = changes.translationEnabled.newValue !== false;
+    if (!translationEnabled) {
+      translationMode = DEFAULT_TRANSLATION_MODE;
+      renderTranslationMode();
+    }
     renderTranslationState();
-  }
-  if (changes.translationMode) {
-    translationMode = getTranslationMode(changes.translationMode.newValue);
-    renderTranslationMode();
+    translationModeInput.disabled = !translationEnabled || !translationModeAvailable;
   }
   if (changes.targetLanguage) {
     targetLanguage = getTargetLanguage(changes.targetLanguage.newValue);
@@ -245,16 +260,22 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 async function loadPopupData() {
   try {
-    const settings = await chrome.storage.local.get([
-      "translationEnabled",
-      "translationMode",
-      "targetLanguage",
-      "tokenUsage",
-      "latencyMetrics",
-      "runtimeLogs"
+    const [settings, modeResponse] = await Promise.all([
+      chrome.storage.local.get([
+        "translationEnabled",
+        "targetLanguage",
+        "tokenUsage",
+        "latencyMetrics",
+        "runtimeLogs"
+      ]),
+      chrome.runtime.sendMessage({ type: "get-active-tab-translation-mode" })
+        .catch(() => ({ ok: false, mode: DEFAULT_TRANSLATION_MODE }))
     ]);
     translationEnabled = settings.translationEnabled !== false;
-    translationMode = getTranslationMode(settings.translationMode);
+    translationModeAvailable = modeResponse?.ok === true;
+    translationMode = translationModeAvailable
+      ? getTranslationMode(modeResponse.mode)
+      : DEFAULT_TRANSLATION_MODE;
     targetLanguage = getTargetLanguage(settings.targetLanguage);
     tokenUsage = settings.tokenUsage || null;
     latencyMetrics = settings.latencyMetrics || null;
@@ -271,7 +292,7 @@ async function loadPopupData() {
   renderLatencyMetrics();
   renderLogs();
   translationEnabledInput.disabled = false;
-  translationModeInput.disabled = false;
+  translationModeInput.disabled = !translationEnabled || !translationModeAvailable;
   targetLanguageInput.disabled = false;
 }
 
