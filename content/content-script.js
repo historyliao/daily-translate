@@ -26,7 +26,9 @@
   let translationMode = defaultTranslationMode;
   let isActiveTranslationTab = false;
   let activeTranslationStateVersion = 0;
+  let pageTranslationDocumentUrl = getPageTranslationDocumentUrl(location.href);
   let pageTranslationEnabled = false;
+  let pageTranslationSuspended = false;
   let pageTranslationSessionId = 0;
   let pageTranslationItemId = 0;
   let pageTranslationScanTimer = null;
@@ -167,10 +169,12 @@
 
   function startPageTranslation() {
     if (pageTranslationEnabled) {
+      resumePageTranslation();
       return;
     }
 
     pageTranslationEnabled = true;
+    pageTranslationSuspended = false;
     pageTranslationPaused = false;
     pageTranslationSessionId += 1;
     pageTranslationItemId = 0;
@@ -209,6 +213,7 @@
     }
 
     pageTranslationEnabled = false;
+    pageTranslationSuspended = false;
     pageTranslationPaused = false;
     pageTranslationSessionId += 1;
     pageTranslationProcessing = false;
@@ -236,6 +241,59 @@
     removePageTranslationFeedback();
   }
 
+  function pausePageTranslation() {
+    if (!pageTranslationEnabled || pageTranslationSuspended) {
+      return;
+    }
+
+    pageTranslationSuspended = true;
+    pageTranslationSessionId += 1;
+    pageTranslationProcessing = false;
+    clearTimeout(pageTranslationScanTimer);
+    pageTranslationScanTimer = null;
+    for (const cancelRequest of Array.from(pageTranslationRequests.values())) {
+      cancelRequest();
+    }
+    const queuedRecords = new Set(pageTranslationQueue);
+    const interruptedRecords = [];
+    for (const record of pageTranslationRecords.values()) {
+      if (record.status !== "translating") {
+        continue;
+      }
+      record.status = "waiting";
+      if (!queuedRecords.has(record)) {
+        interruptedRecords.push(record);
+      }
+    }
+    pageTranslationQueue.unshift(...interruptedRecords);
+    removePageTranslationFeedback();
+  }
+
+  function resumePageTranslation() {
+    if (!pageTranslationEnabled || !pageTranslationSuspended || !isActiveTranslationTab) {
+      return;
+    }
+
+    pageTranslationSuspended = false;
+    pageTranslationSessionId += 1;
+    if (translationMode === "page") {
+      clearTimeout(pageTranslationScanTimer);
+      pageTranslationScanTimer = null;
+      if (pageTranslationChangedRoots.size > 0) {
+        flushPageTranslationChanges();
+      } else {
+        scanPageTranslationSubtree(document.body || document.documentElement);
+        if (pageTranslationQueue.length > 0) {
+          processPageTranslationQueue();
+        } else {
+          showPageTranslationIdleState();
+        }
+      }
+    } else {
+      schedulePageTranslationScan(0);
+    }
+  }
+
   function handleViewportChange() {
     repositionOverlay();
     if (pageTranslationFeedback && pageTranslationHighlightFrame === null) {
@@ -250,12 +308,13 @@
   }
 
   function handlePageHide() {
-    cancelTranslation();
+    translationMode = defaultTranslationMode;
+    closeOverlay();
     stopPageTranslation();
   }
 
   function schedulePageTranslationScan(delay = pageTranslationScanDelay) {
-    if (!pageTranslationEnabled) {
+    if (!pageTranslationEnabled || pageTranslationSuspended || !isActiveTranslationTab) {
       return;
     }
     clearTimeout(pageTranslationScanTimer);
@@ -264,7 +323,7 @@
 
   function scanVisibleText() {
     pageTranslationScanTimer = null;
-    if (!pageTranslationEnabled) {
+    if (!pageTranslationEnabled || pageTranslationSuspended || !isActiveTranslationTab) {
       return;
     }
 
@@ -323,6 +382,9 @@
 
   function flushPageTranslationChanges() {
     pageTranslationScanTimer = null;
+    if (pageTranslationSuspended || !isActiveTranslationTab) {
+      return;
+    }
     const roots = new Set(pageTranslationChangedRoots);
     pageTranslationChangedRoots.clear();
     for (const root of roots) {
@@ -520,7 +582,10 @@
           pageTranslationChangedRoots.add(mutation.target);
         }
       }
-      if (pageTranslationChangedRoots.size > 0 && pageTranslationScanTimer === null) {
+      if (
+        !pageTranslationSuspended && isActiveTranslationTab &&
+        pageTranslationChangedRoots.size > 0 && pageTranslationScanTimer === null
+      ) {
         pageTranslationScanTimer = setTimeout(flushPageTranslationChanges, pageTranslationScanDelay);
       }
       return;
@@ -570,7 +635,10 @@
   }
 
   async function processPageTranslationQueue() {
-    if (pageTranslationProcessing || !pageTranslationEnabled || pageTranslationPaused) {
+    if (
+      pageTranslationProcessing || !pageTranslationEnabled || pageTranslationSuspended ||
+      !isActiveTranslationTab || pageTranslationPaused
+    ) {
       return;
     }
 
@@ -601,7 +669,8 @@
 
     const processBatches = async () => {
       while (
-        pageTranslationEnabled && !pageTranslationPaused &&
+        pageTranslationEnabled && !pageTranslationSuspended &&
+        isActiveTranslationTab && !pageTranslationPaused &&
         sessionId === pageTranslationSessionId
       ) {
         const batch = takePageTranslationBatch();
@@ -633,7 +702,10 @@
 
         try {
           const translations = await requestPageTranslationBatch(batch, sessionId, (count, status) => {
-            if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+            if (
+              !pageTranslationEnabled || pageTranslationSuspended ||
+              !isActiveTranslationTab || sessionId !== pageTranslationSessionId
+            ) {
               return;
             }
             translatedCount += count;
@@ -649,14 +721,20 @@
             }
             showProgress();
           });
-          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+          if (
+            !pageTranslationEnabled || pageTranslationSuspended ||
+            !isActiveTranslationTab || sessionId !== pageTranslationSessionId
+          ) {
             return;
           }
           if (translationMode === "page" && translations.length !== batch.length) {
             throw new Error("INVALID_RESPONSE");
           }
         } catch (error) {
-          if (!pageTranslationEnabled || sessionId !== pageTranslationSessionId) {
+          if (
+            !pageTranslationEnabled || pageTranslationSuspended ||
+            !isActiveTranslationTab || sessionId !== pageTranslationSessionId
+          ) {
             return;
           }
           translationFailed = true;
@@ -675,7 +753,8 @@
             activeRecords.delete(record);
           }
           if (
-            pageTranslationEnabled && !pageTranslationPaused &&
+            pageTranslationEnabled && !pageTranslationSuspended &&
+            isActiveTranslationTab && !pageTranslationPaused &&
             sessionId === pageTranslationSessionId &&
             (activeRecords.size > 0 || pageTranslationQueue.length > 0)
           ) {
@@ -1504,13 +1583,38 @@
     closeOverlay();
   }
 
-  function handleRuntimeMessage(message) {
+  function handleRuntimeMessage(message, sender, sendResponse) {
+    if (message?.type === "get-translation-mode") {
+      sendResponse({ mode: translationMode });
+      return false;
+    }
+    if (message?.type === "set-translation-mode") {
+      const nextTranslationMode = getTranslationMode(message.mode);
+      if (translationMode !== nextTranslationMode && pageTranslationEnabled) {
+        stopPageTranslation();
+      }
+      translationMode = nextTranslationMode;
+      syncTranslationBehavior();
+      sendResponse({ mode: translationMode });
+      return false;
+    }
+    if (message?.type === "tab-url-changed") {
+      const nextPageUrl = getPageTranslationDocumentUrl(message.url);
+      if (nextPageUrl !== pageTranslationDocumentUrl) {
+        pageTranslationDocumentUrl = nextPageUrl;
+        translationMode = defaultTranslationMode;
+        stopPageTranslation();
+        closeOverlay();
+      }
+      return false;
+    }
     if (message?.type !== "active-tab-translation") {
-      return;
+      return false;
     }
     activeTranslationStateVersion += 1;
     isActiveTranslationTab = message.active === true;
     syncTranslationBehavior();
+    return false;
   }
 
   function handleStorageChange(changes, areaName) {
@@ -1520,20 +1624,17 @@
 
     if (changes.translationEnabled) {
       translationEnabled = changes.translationEnabled.newValue !== false;
-    }
-    if (changes.translationMode) {
-      const nextTranslationMode = getTranslationMode(changes.translationMode.newValue);
-      if (translationMode !== nextTranslationMode && pageTranslationEnabled) {
-        stopPageTranslation();
+      if (!translationEnabled) {
+        translationMode = defaultTranslationMode;
       }
-      translationMode = nextTranslationMode;
     }
 
-    if (changes.translationEnabled || changes.translationMode) {
+    if (changes.translationEnabled) {
       syncTranslationBehavior();
     } else if (changes.targetLanguage && pageTranslationEnabled) {
+      translationMode = defaultTranslationMode;
       stopPageTranslation();
-      startPageTranslation();
+      closeOverlay();
     }
   }
 
@@ -1541,21 +1642,16 @@
     const stateVersion = activeTranslationStateVersion;
     try {
       const [settings, tabState] = await Promise.all([
-        chrome.storage.local.get([
-          "translationEnabled",
-          "translationMode"
-        ]),
+        chrome.storage.local.get("translationEnabled"),
         chrome.runtime.sendMessage({ type: "get-active-tab-translation-state" })
       ]);
       translationEnabled = settings.translationEnabled !== false;
-      translationMode = getTranslationMode(settings.translationMode);
       if (stateVersion === activeTranslationStateVersion) {
         isActiveTranslationTab = tabState?.active === true;
       }
       syncTranslationBehavior();
     } catch (error) {
       translationEnabled = true;
-      translationMode = defaultTranslationMode;
       if (stateVersion === activeTranslationStateVersion) {
         isActiveTranslationTab = false;
       }
@@ -1569,11 +1665,14 @@
       closeOverlay();
       stopPageTranslation();
     } else if (
-      isActiveTranslationTab &&
       (translationMode === "viewport" || translationMode === "page")
     ) {
       closeOverlay();
-      startPageTranslation();
+      if (isActiveTranslationTab) {
+        startPageTranslation();
+      } else {
+        pausePageTranslation();
+      }
     } else {
       stopPageTranslation();
     }
@@ -1581,6 +1680,11 @@
 
   function getTranslationMode(value) {
     return ["viewport", "page"].includes(value) ? value : defaultTranslationMode;
+  }
+
+  function getPageTranslationDocumentUrl(value) {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}${url.search}`;
   }
 
   function reportRuntimeLog(event) {

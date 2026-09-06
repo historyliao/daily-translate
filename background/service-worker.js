@@ -87,11 +87,12 @@ let activeTabSyncVersion = 0;
 chrome.runtime.onInstalled.addListener(refreshActionState);
 chrome.runtime.onStartup.addListener(refreshActionState);
 chrome.tabs.onActivated.addListener(syncActiveTabTranslation);
+chrome.tabs.onUpdated.addListener(handleTabUpdated);
 chrome.windows.onFocusChanged.addListener(syncActiveTabTranslation);
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (
     areaName === "local" &&
-    (changes.translationEnabled || changes.translationMode)
+    changes.translationEnabled
   ) {
     refreshActionState();
   }
@@ -112,6 +113,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.error("Failed to read active translation tab", error);
         sendResponse({ active: false });
       });
+    return true;
+  }
+
+  if (message.type === "get-active-tab-translation-mode") {
+    sendMessageToActiveTab({ type: "get-translation-mode" })
+      .then((response) => sendResponse({
+        ok: true,
+        mode: ["selection", "viewport", "page"].includes(response?.mode)
+          ? response.mode
+          : "selection"
+      }))
+      .catch(() => sendResponse({ ok: false, mode: "selection" }));
+    return true;
+  }
+
+  if (
+    message.type === "set-active-tab-translation-mode" &&
+    ["selection", "viewport", "page"].includes(message.mode)
+  ) {
+    sendMessageToActiveTab({ type: "set-translation-mode", mode: message.mode })
+      .then(() => sendResponse({ ok: true, mode: message.mode }))
+      .catch(() => sendResponse({ ok: false, mode: "selection" }));
     return true;
   }
 
@@ -1183,6 +1206,24 @@ async function getActiveTabId() {
   return Number.isInteger(activeTab?.id) ? activeTab.id : null;
 }
 
+async function sendMessageToActiveTab(translationMessage) {
+  const activeTabId = await getActiveTabId();
+  if (!Number.isInteger(activeTabId)) {
+    throw new Error("ACTIVE_TAB_UNAVAILABLE");
+  }
+  return chrome.tabs.sendMessage(activeTabId, translationMessage);
+}
+
+function handleTabUpdated(tabId, changeInfo) {
+  if (typeof changeInfo.url !== "string") {
+    return;
+  }
+  chrome.tabs.sendMessage(tabId, {
+    type: "tab-url-changed",
+    url: changeInfo.url
+  }).catch(() => {});
+}
+
 async function syncActiveTabTranslation() {
   const syncVersion = ++activeTabSyncVersion;
   try {
@@ -1250,30 +1291,18 @@ async function refreshActionState() {
 
 async function getTranslationActionState() {
   try {
-    const settings = await chrome.storage.local.get([
-      "translationEnabled",
-      "translationMode"
-    ]);
+    const settings = await chrome.storage.local.get("translationEnabled");
     return {
-      enabled: settings.translationEnabled !== false,
-      mode: ["viewport", "page"].includes(settings.translationMode)
-        ? settings.translationMode
-        : "selection"
+      enabled: settings.translationEnabled !== false
     };
   } catch (error) {
     console.error("Failed to read translation status", error);
     await recordRuntimeLog("translation_state_read_failed");
-    return { enabled: true, mode: "selection" };
+    return { enabled: true };
   }
 }
 
 async function updateActionState(actionState) {
-  const modeLabels = {
-    selection: "划词翻译",
-    viewport: "滑动窗口翻译",
-    page: "整页翻译"
-  };
-  const modeLabel = modeLabels[actionState.mode];
   await Promise.all([
     chrome.action.setBadgeText({ text: actionState.enabled ? "ON" : "OFF" }),
     chrome.action.setBadgeBackgroundColor({
@@ -1281,7 +1310,7 @@ async function updateActionState(actionState) {
     }),
     chrome.action.setTitle({
       title: actionState.enabled
-        ? `每日翻译：${modeLabel}已开启`
+        ? "每日翻译：已开启"
         : "每日翻译：已关闭"
     })
   ]);
