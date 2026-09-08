@@ -607,10 +607,23 @@ async function requestTranslation(
   } catch (error) {
     requestController.abort();
     let translatedError = error;
+    let originalError;
     if (error.name === "AbortError") {
       translatedError = new Error(timedOut ? "TIMEOUT" : "CANCELED");
     } else if (error instanceof TypeError) {
       translatedError = new Error("NETWORK");
+    }
+    if (translatedError !== error) {
+      originalError = {
+        name: typeof error.name === "string" ? error.name : typeof error,
+        message: typeof error.message === "string" ? error.message : String(error),
+        ...(typeof error.stack === "string" ? { stack: error.stack } : {}),
+        ...(error.cause !== undefined ? {
+          cause: error.cause instanceof Error
+            ? `${error.cause.name}: ${error.cause.message}`
+            : String(error.cause)
+        } : {})
+      };
     }
     clearTimeout(timeoutId);
     if (requestStarted) {
@@ -626,19 +639,25 @@ async function requestTranslation(
       ...diagnostics,
       ...error.details,
       errorCode: translatedError.message,
+      ...(originalError ? { originalError } : {}),
       responseCharacters: responseContent.length,
       ...(requestStarted ? { elapsedMs: getElapsedMilliseconds(requestStart) } : {})
     };
-    if (typeof translatedError.details.apiError === "string") {
-      let apiError = translatedError.details.apiError;
-      if (requestToken) {
-        apiError = apiError.split(JSON.stringify(requestToken).slice(1, -1)).join("[REDACTED]");
-        apiError = apiError.split(requestToken).join("[REDACTED]");
+    for (const details of [translatedError.details, originalError].filter(Boolean)) {
+      for (const field of ["apiError", "message", "stack", "cause"]) {
+        if (typeof details[field] !== "string") {
+          continue;
+        }
+        let value = details[field];
+        if (requestToken) {
+          value = value.split(JSON.stringify(requestToken).slice(1, -1)).join("[REDACTED]");
+          value = value.split(requestToken).join("[REDACTED]");
+        }
+        value = value.replace(/\bBearer\s+[^\s"'<>]+/gi, "Bearer [REDACTED]");
+        details[field] = value.length > 8192
+          ? `${value.slice(0, 8192)}\n[错误内容过长，已截断]`
+          : value;
       }
-      apiError = apiError.replace(/\bBearer\s+[^\s"'<>]+/gi, "Bearer [REDACTED]");
-      translatedError.details.apiError = apiError.length > 8192
-        ? `${apiError.slice(0, 8192)}\n[错误内容过长，已截断]`
-        : apiError;
     }
     throw translatedError;
   } finally {
