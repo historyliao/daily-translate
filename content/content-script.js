@@ -5,6 +5,8 @@
   const pageTranslationScanDelay = 300;
   const fullPageParagraphMaxItems = 128;
   const fullPageParagraphMaxCharacters = 12000;
+  const explanationContextMaxCharacters = 1200;
+  const explanationTitleMaxCharacters = 200;
   const defaultTranslationMode = "selection";
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let active = true;
@@ -80,7 +82,7 @@
   function handleMouseUp(event) {
     if (
       translationEnabled !== true ||
-      translationMode !== "selection" ||
+      !["selection", "explain"].includes(translationMode) ||
       event.button !== 0 ||
       (overlayHost && overlayHost.contains(event.target))
     ) {
@@ -103,7 +105,7 @@
     cancelTranslation();
     translationContent = "";
     const currentRequestId = ++requestId;
-    showOverlay("翻译中…");
+    showOverlay(translationMode === "explain" ? "解读中…" : "翻译中…");
 
     let port;
     try {
@@ -154,7 +156,14 @@
     });
 
     try {
-      port.postMessage({ type: "translate", text });
+      port.postMessage({
+        type: "translate",
+        text,
+        operation: translationMode === "explain" ? "explain" : "translate",
+        ...(translationMode === "explain" ? {
+          context: getSelectionExplanationContext(range)
+        } : {})
+      });
     } catch (error) {
       console.error("Failed to request translation", error);
       reportRuntimeLog("service_connection_error");
@@ -162,6 +171,24 @@
       disconnectPort(port);
       showTranslationError("翻译服务请求失败，请重新加载插件和当前页面");
     }
+  }
+
+  function getSelectionExplanationContext(range) {
+    const paragraphRoot = getPageTranslationParagraphRoot(range.startContainer);
+    const paragraphText = paragraphRoot?.textContent || "";
+    const prefixRange = document.createRange();
+    prefixRange.selectNodeContents(paragraphRoot);
+    prefixRange.setEnd(range.startContainer, range.startOffset);
+    const selectionOffset = prefixRange.toString().length;
+    let start = Math.max(0, selectionOffset - Math.floor(explanationContextMaxCharacters / 2));
+    let end = Math.min(paragraphText.length, start + explanationContextMaxCharacters);
+    if (end - start < explanationContextMaxCharacters) {
+      start = Math.max(0, end - explanationContextMaxCharacters);
+    }
+    return {
+      pageTitle: document.title.trim().slice(0, explanationTitleMaxCharacters),
+      surroundingText: paragraphText.slice(start, end).trim()
+    };
   }
 
   function startPageTranslation() {
@@ -381,7 +408,7 @@
   }
 
   function getPageTranslationParagraphRoot(node) {
-    let parent = node.parentElement;
+    let parent = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     while (parent.parentElement && parent !== document.body) {
       if (!["inline", "contents"].includes(getComputedStyle(parent).display)) {
         break;
@@ -1254,7 +1281,9 @@
       document.documentElement.appendChild(overlayHost);
     }
 
-    const isLoading = !isError && !interruption && content === "翻译中…";
+    const isExplainMode = translationMode === "explain";
+    const actionName = isExplainMode ? "解读" : "翻译";
+    const isLoading = !isError && !interruption && content === `${actionName}中…`;
     translationCard.dataset.state = isError
       ? "error"
       : interruption
@@ -1262,13 +1291,14 @@
         : isLoading
           ? "loading"
           : "result";
-    brandIcon.textContent = isError ? "!" : "译";
-    translationTitle.textContent = isError ? "翻译失败" : "AI 翻译";
+    brandIcon.textContent = isError ? "!" : isExplainMode ? "释" : "译";
+    translationTitle.textContent = isError ? `${actionName}失败` : `AI ${actionName}`;
     loadingIndicator.hidden = !isLoading;
+    loadingIndicator.lastElementChild.textContent = `正在${actionName}…`;
     translationText.hidden = isLoading;
     translationText.textContent = isLoading ? "" : content;
     interruptionMessage.hidden = !interruption;
-    interruptionMessage.textContent = interruption ? `翻译中断：${interruption}` : "";
+    interruptionMessage.textContent = interruption ? `${actionName}中断：${interruption}` : "";
     repositionOverlay();
   }
 
@@ -1404,8 +1434,12 @@
     }
     if (message?.type === "set-translation-mode") {
       const nextTranslationMode = getTranslationMode(message.mode);
-      if (translationMode !== nextTranslationMode && pageTranslationEnabled) {
-        stopPageTranslation();
+      if (translationMode !== nextTranslationMode) {
+        if (pageTranslationEnabled) {
+          stopPageTranslation();
+        } else {
+          closeOverlay();
+        }
       }
       translationMode = nextTranslationMode;
       syncTranslationBehavior();
@@ -1491,7 +1525,7 @@
   }
 
   function getTranslationMode(value) {
-    return value === "page" ? value : defaultTranslationMode;
+    return ["explain", "page"].includes(value) ? value : defaultTranslationMode;
   }
 
   function getPageTranslationDocumentUrl(value) {

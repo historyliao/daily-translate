@@ -18,7 +18,7 @@ const TARGET_LANGUAGES = new Set([
   "zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de",
   "es", "pt", "it", "ru", "ar", "hi"
 ]);
-const TRANSLATION_MODES = new Set(["selection", "page"]);
+const TRANSLATION_MODES = new Set(["selection", "explain", "page"]);
 const numberFormatter = new Intl.NumberFormat("zh-CN");
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
@@ -34,6 +34,7 @@ const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
 const translationEnabledInput = document.querySelector("#translation-enabled");
 const translationStatus = document.querySelector("#translation-status");
 const translationModeInput = document.querySelector("#translation-mode");
+const translationModeHelp = document.querySelector("#translation-mode-help");
 const targetLanguageInput = document.querySelector("#target-language");
 const openOptionsButton = document.querySelector("#open-options");
 const resetTokenUsageButton = document.querySelector("#reset-token-usage");
@@ -115,7 +116,7 @@ translationModeInput.addEventListener("change", async () => {
     reportRuntimeLog("settings_write_failed");
     translationMode = previousTranslationMode;
     renderTranslationMode();
-    errorMessage.textContent = "无法保存翻译模式，请重试";
+    errorMessage.textContent = "无法保存工作模式，请重试";
   } finally {
     translationModeInput.disabled = !translationEnabled || !translationModeAvailable;
   }
@@ -130,8 +131,10 @@ targetLanguageInput.addEventListener("change", async () => {
   try {
     await chrome.storage.local.set({ targetLanguage: nextTargetLanguage });
     targetLanguage = nextTargetLanguage;
-    translationMode = DEFAULT_TRANSLATION_MODE;
-    renderTranslationMode();
+    if (translationMode === "page") {
+      translationMode = DEFAULT_TRANSLATION_MODE;
+      renderTranslationMode();
+    }
     renderTargetLanguage();
   } catch (error) {
     console.error("Failed to save target language", error);
@@ -320,6 +323,9 @@ function renderTargetLanguage() {
 
 function renderTranslationMode() {
   translationModeInput.value = translationMode;
+  translationModeHelp.textContent = translationModeAvailable
+    ? "新页面默认使用划词翻译；划词解读和整页翻译仅对当前页面生效。"
+    : "当前页面不支持翻译，请打开普通 HTTP/HTTPS 网页后再选择模式。";
 }
 
 function getTranslationMode(value) {
@@ -469,7 +475,7 @@ function renderLatencyTargets(entries, samples) {
     heading.append(`${aggregate.host} · ${aggregate.model}`);
     const mode = document.createElement("span");
     mode.className = "latency-mode";
-    mode.textContent = aggregate.streamEnabled ? "流式" : "非流式";
+    mode.textContent = `${aggregate.apiType} · ${aggregate.realtimeOutput ? "实时显示" : "完成后显示"}`;
     heading.appendChild(mode);
 
     const results = document.createElement("p");
@@ -570,11 +576,12 @@ function renderLogs() {
     meta.append(levelLabel, timestamp);
     item.append(meta, message, model);
     if (log.details) {
-      const { apiError, ...diagnostics } = log.details;
-      if (apiError) {
+      const { apiError, providerError, ...diagnostics } = log.details;
+      const originalError = providerError || apiError;
+      if (originalError) {
         const apiErrorContent = document.createElement("pre");
         apiErrorContent.className = "log-api-error";
-        apiErrorContent.textContent = apiError;
+        apiErrorContent.textContent = originalError;
         item.appendChild(apiErrorContent);
       }
       const details = document.createElement("details");

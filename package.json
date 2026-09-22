@@ -1,0 +1,16 @@
+{
+  "name": "daily-translate",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
+  },
+  "devDependencies": {
+    "es-module-lexer": "3.0.2",
+    "esbuild": "0.28.2"
+  }
+}

@@ -40,14 +40,18 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid #9ca3af;
   border-radius: 4px;
+  background: #fff;
+  color: #1f2937;
   font: inherit;
 }
 
-input {
+input,
+select {
   height: 40px;
   padding: 0 11px;
 }
@@ -60,7 +64,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: 2px solid #93c5fd;
   outline-offset: 1px;
   border-color: #2563eb;

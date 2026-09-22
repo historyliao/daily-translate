@@ -1,30 +1,59 @@
 const form = document.querySelector("#settings-form");
+const providerInput = document.querySelector("#provider");
+const apiTypeGroup = document.querySelector("#api-type-group");
+const apiTypeInput = document.querySelector("#api-type");
 const baseUrlInput = document.querySelector("#base-url");
 const tokenInput = document.querySelector("#token");
 const modelInput = document.querySelector("#model");
+const modelList = document.querySelector("#model-list");
 const modelParametersInput = document.querySelector("#model-parameters");
-const streamEnabledInput = document.querySelector("#stream-enabled");
+const realtimeOutputInput = document.querySelector("#realtime-output");
 const status = document.querySelector("#status");
 const toggleToken = document.querySelector("#toggle-token");
-let tokenConfigured = false;
-const reservedModelParameters = new Set([
+const modelParameterNames = new Set([
+  "temperature",
+  "maxTokens",
+  "reasoning",
+  "thinkingBudgets",
+  "samplingParams"
+]);
+const reasoningLevels = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+const thinkingBudgetLevels = new Set(["minimal", "low", "medium", "high"]);
+const reservedSamplingParameters = new Set([
   "model",
   "messages",
+  "input",
   "stream",
-  "stream_options",
-  "response_format"
+  "stream_options"
 ]);
+let providers = [];
+let tokenConfigured = false;
 
 loadSettings();
+
+providerInput.addEventListener("change", async () => {
+  const provider = getSelectedProvider();
+  apiTypeInput.value = provider.defaultApi;
+  baseUrlInput.value = provider.baseUrl;
+  modelInput.value = "";
+  renderProviderFields();
+  await loadProviderModels(provider.id);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   status.textContent = "";
 
+  const providerId = providerInput.value;
+  const apiType = apiTypeInput.value;
   const baseUrl = baseUrlInput.value.trim();
   const model = modelInput.value.trim();
   const token = tokenInput.value.trim();
 
+  if (!providers.some((provider) => provider.id === providerId)) {
+    showStatus("请选择有效的服务商", true);
+    return;
+  }
   if (!isValidBaseUrl(baseUrl)) {
     showStatus("Base URL 必须是有效的 http 或 https 地址", true);
     return;
@@ -48,10 +77,12 @@ form.addEventListener("submit", async (event) => {
   }
 
   const values = {
+    providerId,
+    apiType,
     baseUrl,
     model,
     modelParameters,
-    streamEnabled: streamEnabledInput.checked
+    realtimeOutput: realtimeOutputInput.checked
   };
   if (token) {
     values.token = token;
@@ -78,24 +109,78 @@ toggleToken.addEventListener("click", () => {
 
 async function loadSettings() {
   try {
-    const settings = await chrome.storage.local.get([
-      "baseUrl",
-      "model",
-      "modelParameters",
-      "streamEnabled",
-      "tokenConfigured"
+    const [catalogResponse, settings] = await Promise.all([
+      chrome.runtime.sendMessage({ type: "get-provider-catalog" }),
+      chrome.storage.local.get([
+        "providerId",
+        "apiType",
+        "baseUrl",
+        "model",
+        "modelParameters",
+        "realtimeOutput",
+        "tokenConfigured"
+      ])
     ]);
-    baseUrlInput.value = settings.baseUrl || "";
+    if (!catalogResponse?.ok || !Array.isArray(catalogResponse.providers) || catalogResponse.providers.length === 0) {
+      throw new Error("PROVIDER_CATALOG_UNAVAILABLE");
+    }
+
+    providers = catalogResponse.providers;
+    for (const provider of providers) {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.name;
+      providerInput.appendChild(option);
+    }
+
+    const selectedProvider = providers.find((provider) => provider.id === settings.providerId)
+      || providers[0];
+    providerInput.value = selectedProvider.id;
+    apiTypeInput.value = settings.apiType || selectedProvider.defaultApi;
+    baseUrlInput.value = settings.baseUrl || selectedProvider.baseUrl;
     modelInput.value = settings.model || "";
     modelParametersInput.value = settings.modelParameters && Object.keys(settings.modelParameters).length > 0
       ? JSON.stringify(settings.modelParameters, null, 2)
       : "";
-    streamEnabledInput.checked = settings.streamEnabled === true;
+    realtimeOutputInput.checked = settings.realtimeOutput === true;
     tokenConfigured = settings.tokenConfigured === true;
+    renderProviderFields();
+    await loadProviderModels(selectedProvider.id);
   } catch (error) {
     console.error("Failed to read settings", error);
     reportRuntimeLog("settings_read_failed");
     showStatus("读取配置失败，请重新打开设置页", true);
+  }
+}
+
+function getSelectedProvider() {
+  return providers.find((provider) => provider.id === providerInput.value);
+}
+
+function renderProviderFields() {
+  apiTypeGroup.hidden = providerInput.value !== "custom";
+  apiTypeInput.required = providerInput.value === "custom";
+}
+
+async function loadProviderModels(providerId) {
+  modelList.replaceChildren();
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "get-provider-models",
+      providerId
+    });
+    if (!response?.ok || !Array.isArray(response.models)) {
+      throw new Error("MODEL_CATALOG_UNAVAILABLE");
+    }
+    for (const model of response.models) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.label = model.name === model.id ? "" : model.name;
+      modelList.appendChild(option);
+    }
+  } catch (error) {
+    console.error("Failed to read model catalog", error);
+    showStatus("模型建议加载失败，仍可手动填写 Model", true);
   }
 }
 
@@ -110,14 +195,53 @@ function parseModelParameters(value) {
   } catch {
     throw new Error("模型参数必须是合法的 JSON");
   }
-  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+  if (!isPlainObject(parameters)) {
     throw new Error("模型参数必须是 JSON 对象");
   }
-  const reservedParameter = Object.keys(parameters).find((name) => reservedModelParameters.has(name));
-  if (reservedParameter) {
-    throw new Error(`模型参数 ${reservedParameter} 由插件管理，请从 JSON 中移除`);
+  const unsupportedParameter = Object.keys(parameters).find((name) => !modelParameterNames.has(name));
+  if (unsupportedParameter) {
+    throw new Error(`不支持模型参数 ${unsupportedParameter}`);
+  }
+  if (
+    parameters.temperature !== undefined &&
+    (typeof parameters.temperature !== "number" || !Number.isFinite(parameters.temperature))
+  ) {
+    throw new Error("temperature 必须是有限数字");
+  }
+  if (
+    parameters.maxTokens !== undefined &&
+    (!Number.isSafeInteger(parameters.maxTokens) || parameters.maxTokens <= 0)
+  ) {
+    throw new Error("maxTokens 必须是正整数");
+  }
+  if (parameters.reasoning !== undefined && !reasoningLevels.has(parameters.reasoning)) {
+    throw new Error("reasoning 必须是 minimal、low、medium、high、xhigh 或 max");
+  }
+  if (parameters.thinkingBudgets !== undefined) {
+    if (!isPlainObject(parameters.thinkingBudgets)) {
+      throw new Error("thinkingBudgets 必须是 JSON 对象");
+    }
+    for (const [level, budget] of Object.entries(parameters.thinkingBudgets)) {
+      if (!thinkingBudgetLevels.has(level) || !Number.isSafeInteger(budget) || budget <= 0) {
+        throw new Error("thinkingBudgets 只支持 minimal、low、medium、high 的正整数预算");
+      }
+    }
+  }
+  if (parameters.samplingParams !== undefined) {
+    if (!isPlainObject(parameters.samplingParams)) {
+      throw new Error("samplingParams 必须是 JSON 对象");
+    }
+    const reservedParameter = Object.keys(parameters.samplingParams)
+      .find((name) => reservedSamplingParameters.has(name));
+    if (reservedParameter) {
+      throw new Error(`samplingParams.${reservedParameter} 由插件管理，请移除`);
+    }
   }
   return parameters;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isValidBaseUrl(value) {
