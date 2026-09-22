@@ -9,10 +9,25 @@
   <body>
     <main class="settings">
       <h1>每日翻译设置</h1>
-      <p class="intro">配置 OpenAI-compatible 翻译服务。</p>
+      <p class="intro">选择模型服务商，也可以连接自定义兼容服务。</p>
       <form id="settings-form">
+        <label for="provider">服务商</label>
+        <select id="provider" name="provider" required></select>
+
+        <div id="api-type-group" hidden>
+          <label for="api-type">API 类型</label>
+          <select id="api-type" name="api-type">
+            <option value="openai-completions">OpenAI Chat Completions</option>
+            <option value="openai-responses">OpenAI Responses</option>
+            <option value="anthropic-messages">Anthropic Messages</option>
+            <option value="google-generative-ai">Google Generative AI</option>
+            <option value="mistral-conversations">Mistral Conversations</option>
+          </select>
+        </div>
+
         <label for="base-url">Base URL</label>
-        <input id="base-url" name="base-url" type="url" placeholder="https://api.openai.com/v1" required>
+        <input id="base-url" name="base-url" type="url" placeholder="请输入模型服务地址" required>
+        <p class="help">内置地址可以改为代理、内网网关或本地部署地址。</p>
 
         <label for="token">Token</label>
         <div class="token-row">
@@ -21,21 +36,23 @@
         </div>
 
         <label for="model">Model</label>
-        <input id="model" name="model" type="text" placeholder="请输入模型名称" required>
+        <input id="model" name="model" type="text" list="model-list" placeholder="请选择或输入模型名称" required>
+        <datalist id="model-list"></datalist>
 
         <label for="model-parameters">模型参数（JSON，可选）</label>
-        <textarea id="model-parameters" name="model-parameters" rows="7" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "reasoning_effort": "low"&#10;}'></textarea>
-        <p class="help">支持模型或服务商提供的 Chat Completions 参数。model、messages、stream、stream_options 和 response_format 由插件管理。</p>
+        <textarea id="model-parameters" name="model-parameters" rows="9" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "maxTokens": 2048,&#10;  "reasoning": "low",&#10;  "samplingParams": { "top_p": 0.9 }&#10;}'></textarea>
+        <p class="help">支持 temperature、maxTokens、reasoning、thinkingBudgets 和 samplingParams；具体能力取决于模型及 API 类型。</p>
 
-        <label class="toggle" for="stream-enabled">
-          <input id="stream-enabled" name="stream-enabled" type="checkbox">
-          <span>启用流式响应</span>
+        <label class="toggle" for="realtime-output">
+          <input id="realtime-output" name="realtime-output" type="checkbox">
+          <span>实时显示译文</span>
         </label>
+        <p class="help">关闭时等待模型完成后一次显示；底层响应协议由所选服务商适配器处理。</p>
 
         <button class="save" type="submit">保存设置</button>
         <p id="status" class="status" role="status" aria-live="polite"></p>
       </form>
     </main>
-    <script src="options.js"></script>
+    <script type="module" src="options.js"></script>
   </body>
 </html>
