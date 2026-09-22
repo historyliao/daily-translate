@@ -7,6 +7,7 @@
   const fullPageParagraphMaxCharacters = 12000;
   const explanationContextMaxCharacters = 1200;
   const explanationTitleMaxCharacters = 200;
+  const conversationMessageLimit = 20;
   const defaultTranslationMode = "selection";
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let active = true;
@@ -18,12 +19,19 @@
   let loadingIndicator = null;
   let translationText = null;
   let interruptionMessage = null;
+  let overlayView = null;
+  let conversationMessagesElement = null;
+  let conversationInput = null;
+  let conversationSendButton = null;
+  let conversationStatus = null;
+  let conversationRetryButton = null;
   let requestId = 0;
   let anchorRange = null;
   let translationPort = null;
   let translationContent = "";
   let translationEnabled;
   let translationMode = defaultTranslationMode;
+  let conversation = null;
   let isActiveTranslationTab = false;
   let activeTranslationStateVersion = 0;
   let pageTranslationDocumentUrl = getPageTranslationDocumentUrl(location.href);
@@ -52,6 +60,7 @@
   staleOverlayObserver.observe(document.documentElement, { childList: true });
   document.addEventListener("mousedown", handleMouseDown, true);
   document.addEventListener("mouseup", handleMouseUp, true);
+  document.addEventListener("keydown", handleKeyDown, true);
   window.addEventListener("scroll", handleViewportChange, true);
   window.addEventListener("resize", handleViewportChange);
   window.addEventListener("pagehide", handlePageHide);
@@ -62,6 +71,9 @@
 
   function handleMouseDown(event) {
     if (!overlayHost || overlayHost.contains(event.target)) {
+      return;
+    }
+    if (overlayView === "conversation") {
       return;
     }
 
@@ -79,10 +91,16 @@
     closeOverlay();
   }
 
+  function handleKeyDown(event) {
+    if (event.key === "Escape" && overlayHost) {
+      closeOverlay();
+    }
+  }
+
   function handleMouseUp(event) {
     if (
       translationEnabled !== true ||
-      !["selection", "explain"].includes(translationMode) ||
+      translationMode !== "selection" ||
       event.button !== 0 ||
       (overlayHost && overlayHost.contains(event.target))
     ) {
@@ -101,11 +119,16 @@
       return;
     }
 
+    const explanationContext = getSelectionExplanationContext(range);
+    closeOverlay();
     anchorRange = range.cloneRange();
-    cancelTranslation();
+    showSelectionActions(text, explanationContext);
+  }
+
+  function startSelectionTranslation(text) {
     translationContent = "";
     const currentRequestId = ++requestId;
-    showOverlay(translationMode === "explain" ? "解读中…" : "翻译中…");
+    showOverlay("翻译中…");
 
     let port;
     try {
@@ -158,11 +181,7 @@
     try {
       port.postMessage({
         type: "translate",
-        text,
-        operation: translationMode === "explain" ? "explain" : "translate",
-        ...(translationMode === "explain" ? {
-          context: getSelectionExplanationContext(range)
-        } : {})
+        text
       });
     } catch (error) {
       console.error("Failed to request translation", error);
@@ -171,6 +190,139 @@
       disconnectPort(port);
       showTranslationError("翻译服务请求失败，请重新加载插件和当前页面");
     }
+  }
+
+  function startExplanationConversation(text, explanationContext) {
+    conversation = {
+      sourceText: text,
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          text,
+          pageTitle: explanationContext.pageTitle,
+          surroundingText: explanationContext.surroundingText
+        })
+      }],
+      inFlight: false,
+      pendingQuestion: "",
+      draftAnswer: "",
+      error: "",
+      limitReached: false
+    };
+    showConversationDialog();
+    requestConversationAnswer();
+  }
+
+  function submitConversationQuestion() {
+    if (!conversation || conversation.inFlight || conversation.messages.length === 1) {
+      return;
+    }
+    const question = conversationInput.value.trim();
+    if (question) {
+      requestConversationAnswer(question);
+    }
+  }
+
+  function requestConversationAnswer(question = "") {
+    if (!conversation || conversation.inFlight) {
+      return;
+    }
+    const initialRequest = conversation.messages.length === 1;
+    const pendingQuestion = initialRequest ? "" : question.trim();
+    if (!initialRequest && !pendingQuestion) {
+      return;
+    }
+    if (!initialRequest && conversation.messages.length >= conversationMessageLimit) {
+      conversation.limitReached = true;
+      renderConversation();
+      return;
+    }
+
+    const messages = pendingQuestion
+      ? [...conversation.messages, { role: "user", content: pendingQuestion }]
+      : [...conversation.messages];
+    const currentRequestId = ++requestId;
+    conversation.inFlight = true;
+    conversation.pendingQuestion = pendingQuestion;
+    conversation.draftAnswer = "";
+    conversation.error = "";
+    renderConversation();
+
+    let port;
+    try {
+      port = chrome.runtime.connect({ name: "translation" });
+    } catch (error) {
+      console.error("Failed to connect to explanation service", error);
+      reportRuntimeLog("service_connection_error");
+      failConversationRequest("解读服务请求失败，请重新加载插件和当前页面");
+      return;
+    }
+    translationPort = port;
+
+    port.onMessage.addListener((message) => {
+      if (
+        currentRequestId !== requestId ||
+        translationPort !== port ||
+        !conversation
+      ) {
+        return;
+      }
+      if (message?.type === "chunk" && typeof message.content === "string") {
+        conversation.draftAnswer += message.content;
+        renderConversation();
+      } else if (message?.type === "done") {
+        const answer = conversation.draftAnswer.trim();
+        if (conversation.pendingQuestion) {
+          conversation.messages.push({ role: "user", content: conversation.pendingQuestion });
+          conversationInput.value = "";
+        }
+        conversation.messages.push({ role: "assistant", content: answer });
+        conversation.pendingQuestion = "";
+        conversation.draftAnswer = "";
+        conversation.inFlight = false;
+        translationPort = null;
+        disconnectPort(port);
+        renderConversation();
+        conversationInput.focus();
+      } else if (message?.type === "error") {
+        translationPort = null;
+        disconnectPort(port);
+        failConversationRequest(message.error || "解读服务请求失败，请稍后重试");
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      try {
+        void chrome.runtime.lastError;
+      } catch (error) {
+        console.debug("Failed to read explanation disconnect error", error);
+      }
+      if (currentRequestId !== requestId || translationPort !== port || !conversation) {
+        return;
+      }
+      translationPort = null;
+      reportRuntimeLog("service_connection_error");
+      failConversationRequest("解读服务连接已中断");
+    });
+
+    try {
+      port.postMessage({ type: "explain-conversation", messages });
+    } catch (error) {
+      console.error("Failed to request explanation", error);
+      reportRuntimeLog("service_connection_error");
+      translationPort = null;
+      disconnectPort(port);
+      failConversationRequest("解读服务请求失败，请重新加载插件和当前页面");
+    }
+  }
+
+  function failConversationRequest(error) {
+    if (!conversation) {
+      return;
+    }
+    conversation.inFlight = false;
+    conversation.error = error;
+    renderConversation();
   }
 
   function getSelectionExplanationContext(range) {
@@ -1111,14 +1263,355 @@
     }
   }
 
+  function createOverlayHost() {
+    overlayHost = document.createElement("div");
+    overlayHost.setAttribute(overlayAttribute, instanceId);
+    overlayHost.style.position = "fixed";
+    overlayHost.style.zIndex = "2147483647";
+    overlayHost.style.pointerEvents = "auto";
+    shadowRoot = overlayHost.attachShadow({ mode: "closed" });
+    document.documentElement.appendChild(overlayHost);
+  }
+
+  function showSelectionActions(text, explanationContext) {
+    createOverlayHost();
+    overlayView = "actions";
+    shadowRoot.innerHTML = `
+      <style>
+        :host { all: initial; }
+        * { box-sizing: border-box; }
+        .selection-actions {
+          display: flex;
+          overflow: hidden;
+          border: 1px solid rgba(148, 163, 184, 0.42);
+          border-radius: 10px;
+          background: rgba(255, 255, 255, 0.98);
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+          font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          backdrop-filter: blur(8px);
+          animation: translator-enter 120ms ease-out;
+        }
+        button {
+          min-width: 62px;
+          padding: 9px 13px;
+          border: 0;
+          background: transparent;
+          color: #1e293b;
+          cursor: pointer;
+          font: inherit;
+          font-weight: 600;
+        }
+        button + button { border-left: 1px solid #e2e8f0; }
+        button:hover, button:focus-visible {
+          background: #eff6ff;
+          color: #1d4ed8;
+          outline: none;
+        }
+        @keyframes translator-enter {
+          from { opacity: 0; transform: translateY(3px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @media (prefers-color-scheme: dark) {
+          .selection-actions {
+            border-color: rgba(100, 116, 139, 0.58);
+            background: rgba(17, 24, 39, 0.98);
+          }
+          button { color: #f1f5f9; }
+          button + button { border-left-color: rgba(71, 85, 105, 0.8); }
+          button:hover, button:focus-visible { background: #1e3a5f; color: #bfdbfe; }
+        }
+      </style>
+      <div class="selection-actions" role="toolbar" aria-label="划词工具">
+        <button type="button" data-action="translate">翻译</button>
+        <button type="button" data-action="explain">解读</button>
+      </div>
+    `;
+    translationCard = shadowRoot.querySelector(".selection-actions");
+    shadowRoot.querySelector('[data-action="translate"]').addEventListener("click", () => {
+      removeOverlayHost();
+      startSelectionTranslation(text);
+    });
+    shadowRoot.querySelector('[data-action="explain"]').addEventListener("click", () => {
+      removeOverlayHost();
+      startExplanationConversation(text, explanationContext);
+    });
+    repositionOverlay();
+  }
+
+  function showConversationDialog() {
+    createOverlayHost();
+    overlayView = "conversation";
+    shadowRoot.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          --conversation-background: rgba(255, 255, 255, 0.98);
+          --conversation-panel: #f8fafc;
+          --conversation-border: rgba(148, 163, 184, 0.4);
+          --conversation-divider: #e2e8f0;
+          --conversation-text: #172033;
+          --conversation-muted: #64748b;
+          --conversation-accent: #2563eb;
+          --conversation-user: #2563eb;
+          --conversation-assistant: #f1f5f9;
+          --conversation-error: #b91c1c;
+        }
+        * { box-sizing: border-box; }
+        [hidden] { display: none !important; }
+        .conversation-card {
+          display: flex;
+          width: min(440px, calc(100vw - 24px));
+          max-height: min(560px, calc(100vh - 24px));
+          overflow: hidden;
+          flex-direction: column;
+          border: 1px solid var(--conversation-border);
+          border-radius: 14px;
+          background: var(--conversation-background);
+          color: var(--conversation-text);
+          box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2), 0 3px 12px rgba(15, 23, 42, 0.1);
+          font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          backdrop-filter: blur(8px);
+          animation: translator-enter 140ms ease-out;
+        }
+        .conversation-header {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 9px;
+          padding: 10px 12px;
+          border-bottom: 1px solid var(--conversation-divider);
+          background: var(--conversation-panel);
+        }
+        .conversation-icon {
+          display: inline-flex;
+          width: 24px;
+          height: 24px;
+          align-items: center;
+          justify-content: center;
+          border-radius: 7px;
+          background: #dbeafe;
+          color: var(--conversation-accent);
+          font-size: 12px;
+          font-weight: 700;
+        }
+        .conversation-heading { min-width: 0; }
+        .conversation-title { font-size: 13px; font-weight: 700; }
+        .conversation-source {
+          overflow: hidden;
+          margin-top: 1px;
+          color: var(--conversation-muted);
+          font-size: 12px;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .conversation-close {
+          width: 28px;
+          height: 28px;
+          border: 0;
+          border-radius: 7px;
+          background: transparent;
+          color: var(--conversation-muted);
+          cursor: pointer;
+          font: 20px/1 sans-serif;
+        }
+        .conversation-close:hover, .conversation-close:focus-visible {
+          background: #e2e8f0;
+          color: var(--conversation-text);
+          outline: none;
+        }
+        .conversation-messages {
+          min-height: 120px;
+          overflow: auto;
+          padding: 14px;
+          scrollbar-color: var(--conversation-border) transparent;
+          scrollbar-width: thin;
+        }
+        .message { display: flex; margin-bottom: 12px; flex-direction: column; }
+        .message:last-child { margin-bottom: 0; }
+        .message-user { align-items: flex-end; }
+        .message-label {
+          margin-bottom: 4px;
+          color: var(--conversation-muted);
+          font-size: 11px;
+          font-weight: 650;
+        }
+        .message-content {
+          max-width: 88%;
+          padding: 9px 11px;
+          border-radius: 10px;
+          background: var(--conversation-assistant);
+          color: var(--conversation-text);
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        .message-user .message-content {
+          background: var(--conversation-user);
+          color: #fff;
+        }
+        .message-error .message-content {
+          border: 1px solid #fecaca;
+          background: #fef2f2;
+          color: var(--conversation-error);
+        }
+        .conversation-footer {
+          padding: 10px 12px 12px;
+          border-top: 1px solid var(--conversation-divider);
+          background: var(--conversation-panel);
+        }
+        .conversation-status {
+          min-height: 18px;
+          margin-bottom: 6px;
+          color: var(--conversation-muted);
+          font-size: 12px;
+        }
+        .conversation-input-row { display: flex; align-items: flex-end; gap: 8px; }
+        textarea {
+          min-height: 40px;
+          max-height: 112px;
+          flex: 1;
+          resize: vertical;
+          padding: 9px 10px;
+          border: 1px solid var(--conversation-border);
+          border-radius: 9px;
+          background: var(--conversation-background);
+          color: var(--conversation-text);
+          font: inherit;
+          line-height: 1.45;
+        }
+        textarea:focus { border-color: #60a5fa; outline: 2px solid rgba(96, 165, 250, 0.2); }
+        textarea:disabled { cursor: not-allowed; opacity: 0.65; }
+        .conversation-send, .conversation-retry {
+          min-height: 40px;
+          padding: 0 13px;
+          border: 0;
+          border-radius: 9px;
+          background: var(--conversation-accent);
+          color: #fff;
+          cursor: pointer;
+          font: 13px/1 sans-serif;
+          font-weight: 650;
+        }
+        .conversation-send:disabled { cursor: not-allowed; opacity: 0.48; }
+        .conversation-retry { min-height: 28px; margin-left: 8px; padding: 0 9px; }
+        @keyframes translator-enter {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @media (prefers-color-scheme: dark) {
+          :host {
+            --conversation-background: rgba(17, 24, 39, 0.98);
+            --conversation-panel: #1f2937;
+            --conversation-border: rgba(100, 116, 139, 0.58);
+            --conversation-divider: rgba(71, 85, 105, 0.8);
+            --conversation-text: #f1f5f9;
+            --conversation-muted: #a8b3c5;
+            --conversation-accent: #3b82f6;
+            --conversation-user: #2563eb;
+            --conversation-assistant: #263244;
+            --conversation-error: #fca5a5;
+          }
+          .conversation-icon { background: #1e3a5f; color: #bfdbfe; }
+          .conversation-close:hover, .conversation-close:focus-visible { background: #334155; }
+          .message-error .message-content { border-color: rgba(248, 113, 113, 0.45); background: rgba(127, 29, 29, 0.3); }
+        }
+      </style>
+      <section class="conversation-card" role="dialog" aria-label="AI 解读">
+        <header class="conversation-header">
+          <span class="conversation-icon" aria-hidden="true">释</span>
+          <div class="conversation-heading">
+            <div class="conversation-title">AI 解读</div>
+            <div class="conversation-source"></div>
+          </div>
+          <button class="conversation-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div class="conversation-messages" aria-live="polite"></div>
+        <footer class="conversation-footer">
+          <div class="conversation-status"></div>
+          <div class="conversation-input-row">
+            <textarea rows="1" maxlength="12000" placeholder="继续追问…" aria-label="继续追问"></textarea>
+            <button class="conversation-retry" type="button" hidden>重试</button>
+            <button class="conversation-send" type="button">发送</button>
+          </div>
+        </footer>
+      </section>
+    `;
+    translationCard = shadowRoot.querySelector(".conversation-card");
+    conversationMessagesElement = shadowRoot.querySelector(".conversation-messages");
+    conversationInput = shadowRoot.querySelector("textarea");
+    conversationSendButton = shadowRoot.querySelector(".conversation-send");
+    conversationStatus = shadowRoot.querySelector(".conversation-status");
+    conversationRetryButton = shadowRoot.querySelector(".conversation-retry");
+    shadowRoot.querySelector(".conversation-source").textContent = conversation.sourceText;
+    shadowRoot.querySelector(".conversation-close").addEventListener("click", closeOverlay);
+    conversationInput.addEventListener("input", renderConversation);
+    conversationInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        submitConversationQuestion();
+      }
+    });
+    conversationSendButton.addEventListener("click", submitConversationQuestion);
+    conversationRetryButton.addEventListener("click", () => {
+      requestConversationAnswer(conversation.messages.length === 1 ? "" : conversationInput.value);
+    });
+    renderConversation();
+    repositionOverlay();
+  }
+
+  function renderConversation() {
+    if (!conversation || !conversationMessagesElement) {
+      return;
+    }
+    conversationMessagesElement.replaceChildren();
+    for (const message of conversation.messages.slice(1)) {
+      appendConversationMessage(message.role, message.content);
+    }
+    if (conversation.pendingQuestion) {
+      appendConversationMessage("user", conversation.pendingQuestion);
+    }
+    if (conversation.inFlight || conversation.draftAnswer || conversation.error) {
+      let content = conversation.draftAnswer || (conversation.inFlight ? "正在回答…" : "");
+      if (conversation.error) {
+        content = content
+          ? `${content}\n\n回答中断：${conversation.error}`
+          : conversation.error;
+      }
+      appendConversationMessage("assistant", content, Boolean(conversation.error));
+    }
+
+    const initialRequestPending = conversation.messages.length === 1;
+    const inputDisabled = conversation.inFlight || initialRequestPending || conversation.limitReached;
+    conversationInput.disabled = inputDisabled;
+    conversationSendButton.disabled = inputDisabled || !conversationInput.value.trim();
+    conversationRetryButton.hidden = !conversation.error;
+    conversationStatus.textContent = conversation.limitReached
+      ? "本次会话已达到上限，请重新选择文字开始新会话"
+      : conversation.inFlight
+        ? "正在回答…"
+        : conversation.error
+          ? "本轮回答失败，可重试"
+          : `已使用 ${Math.floor(conversation.messages.length / 2)}/10 轮`;
+    conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
+  }
+
+  function appendConversationMessage(role, content, isError = false) {
+    const message = document.createElement("div");
+    message.className = `message message-${role}${isError ? " message-error" : ""}`;
+    const label = document.createElement("div");
+    label.className = "message-label";
+    label.textContent = role === "user" ? "你" : "AI";
+    const body = document.createElement("div");
+    body.className = "message-content";
+    body.textContent = content;
+    message.append(label, body);
+    conversationMessagesElement.appendChild(message);
+  }
+
   function showOverlay(content, isError = false, interruption = "") {
-    if (!overlayHost) {
-      overlayHost = document.createElement("div");
-      overlayHost.setAttribute(overlayAttribute, instanceId);
-      overlayHost.style.position = "fixed";
-      overlayHost.style.zIndex = "2147483647";
-      overlayHost.style.pointerEvents = "auto";
-      shadowRoot = overlayHost.attachShadow({ mode: "closed" });
+    if (!overlayHost || overlayView !== "translation") {
+      removeOverlayHost();
+      createOverlayHost();
+      overlayView = "translation";
       shadowRoot.innerHTML = `
         <style>
           :host {
@@ -1278,11 +1771,9 @@
       loadingIndicator = shadowRoot.querySelector(".loading-indicator");
       translationText = shadowRoot.querySelector(".translation-content");
       interruptionMessage = shadowRoot.querySelector(".interruption");
-      document.documentElement.appendChild(overlayHost);
     }
 
-    const isExplainMode = translationMode === "explain";
-    const actionName = isExplainMode ? "解读" : "翻译";
+    const actionName = "翻译";
     const isLoading = !isError && !interruption && content === `${actionName}中…`;
     translationCard.dataset.state = isError
       ? "error"
@@ -1291,7 +1782,7 @@
         : isLoading
           ? "loading"
           : "result";
-    brandIcon.textContent = isError ? "!" : isExplainMode ? "释" : "译";
+    brandIcon.textContent = isError ? "!" : "译";
     translationTitle.textContent = isError ? `${actionName}失败` : `AI ${actionName}`;
     loadingIndicator.hidden = !isLoading;
     loadingIndicator.lastElementChild.textContent = `正在${actionName}…`;
@@ -1343,18 +1834,27 @@
   function closeOverlay() {
     requestId += 1;
     cancelTranslation();
-    if (overlayHost) {
-      overlayHost.remove();
-      overlayHost = null;
-      shadowRoot = null;
-      translationCard = null;
-      brandIcon = null;
-      translationTitle = null;
-      loadingIndicator = null;
-      translationText = null;
-      interruptionMessage = null;
-      anchorRange = null;
-    }
+    conversation = null;
+    removeOverlayHost();
+    anchorRange = null;
+  }
+
+  function removeOverlayHost() {
+    overlayHost?.remove();
+    overlayHost = null;
+    shadowRoot = null;
+    translationCard = null;
+    brandIcon = null;
+    translationTitle = null;
+    loadingIndicator = null;
+    translationText = null;
+    interruptionMessage = null;
+    conversationMessagesElement = null;
+    conversationInput = null;
+    conversationSendButton = null;
+    conversationStatus = null;
+    conversationRetryButton = null;
+    overlayView = null;
   }
 
   function cancelTranslation() {
@@ -1413,6 +1913,7 @@
     document.removeEventListener(activationEventName, handleContentScriptActivate, true);
     document.removeEventListener("mousedown", handleMouseDown, true);
     document.removeEventListener("mouseup", handleMouseUp, true);
+    document.removeEventListener("keydown", handleKeyDown, true);
     window.removeEventListener("scroll", handleViewportChange, true);
     window.removeEventListener("resize", handleViewportChange);
     window.removeEventListener("pagehide", handlePageHide);
@@ -1479,9 +1980,11 @@
 
     if (changes.translationEnabled) {
       syncTranslationBehavior();
-    } else if (changes.targetLanguage && pageTranslationEnabled) {
-      translationMode = defaultTranslationMode;
-      stopPageTranslation();
+    } else if (changes.targetLanguage) {
+      if (pageTranslationEnabled) {
+        translationMode = defaultTranslationMode;
+        stopPageTranslation();
+      }
       closeOverlay();
     }
   }
@@ -1525,7 +2028,7 @@
   }
 
   function getTranslationMode(value) {
-    return ["explain", "page"].includes(value) ? value : defaultTranslationMode;
+    return value === "page" ? value : defaultTranslationMode;
   }
 
   function getPageTranslationDocumentUrl(value) {

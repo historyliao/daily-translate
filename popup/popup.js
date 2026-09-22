@@ -18,7 +18,7 @@ const TARGET_LANGUAGES = new Set([
   "zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de",
   "es", "pt", "it", "ru", "ar", "hi"
 ]);
-const TRANSLATION_MODES = new Set(["selection", "explain", "page"]);
+const TRANSLATION_MODES = new Set(["selection", "page"]);
 const numberFormatter = new Intl.NumberFormat("zh-CN");
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
@@ -324,7 +324,7 @@ function renderTargetLanguage() {
 function renderTranslationMode() {
   translationModeInput.value = translationMode;
   translationModeHelp.textContent = translationModeAvailable
-    ? "新页面默认使用划词翻译；划词解读和整页翻译仅对当前页面生效。"
+    ? "新页面默认使用划词工具；整页翻译仅对当前页面生效。"
     : "当前页面不支持翻译，请打开普通 HTTP/HTTPS 网页后再选择模式。";
 }
 
