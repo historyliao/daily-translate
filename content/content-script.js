@@ -20,6 +20,7 @@
   let interruptionMessage = null;
   let overlayView = null;
   let conversationMessagesElement = null;
+  let conversationDraftElements = null;
   let conversationInput = null;
   let conversationSendButton = null;
   let conversationStatus = null;
@@ -267,10 +268,10 @@
       }
       if (message?.type === "chunk" && typeof message.content === "string") {
         conversation.draftAnswer += message.content;
-        renderConversation();
+        updateDraftMessage();
       } else if (message?.type === "thinking" && typeof message.content === "string") {
         conversation.draftThinking += message.content;
-        renderConversation();
+        updateDraftMessage();
       } else if (message?.type === "done") {
         const answer = conversation.draftAnswer.trim();
         if (conversation.pendingQuestion) {
@@ -1644,6 +1645,7 @@
       return;
     }
     conversationMessagesElement.replaceChildren();
+    conversationDraftElements = null;
     for (const message of conversation.messages.slice(1)) {
       let thinkingState = conversation.thinkingStates.get(message);
       if (!thinkingState) {
@@ -1667,7 +1669,7 @@
           ? `${content}\n\n回答中断：${conversation.error}`
           : conversation.error;
       }
-      appendConversationMessage({
+      conversationDraftElements = appendConversationMessage({
         role: "assistant",
         content,
         thinking: conversation.draftThinking.trim(),
@@ -1686,7 +1688,24 @@
       ? "正在回答…"
       : conversation.error
         ? "本轮回答失败，可重试"
-        : `已使用 ${Math.floor(conversation.messages.length / 2)} 轮`;
+        : `已交互 ${Math.floor(conversation.messages.length / 2)} 轮`;
+    if (conversationPosition) {
+      setConversationPosition(conversationPosition.left, conversationPosition.top);
+    }
+    conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
+  }
+
+  function updateDraftMessage() {
+    const elements = conversationDraftElements;
+    if (!elements || (!elements.thinkingBody && conversation.draftThinking.trim())) {
+      renderConversation();
+      return;
+    }
+    if (elements.thinkingBody) {
+      elements.thinkingBody.textContent = conversation.draftThinking.trim();
+      elements.thinkingSummary.textContent = conversation.draftAnswer ? "思考过程" : "思考中…";
+    }
+    elements.contentBody.textContent = conversation.draftAnswer || "正在回答…";
     if (conversationPosition) {
       setConversationPosition(conversationPosition.left, conversationPosition.top);
     }
@@ -1707,16 +1726,18 @@
     label.className = "message-label";
     label.textContent = role === "user" ? "你" : "AI";
     message.appendChild(label);
+    let thinkingSummary;
+    let thinkingBody;
     if (thinking) {
       const block = document.createElement("details");
       block.className = "message-thinking";
       block.open = thinkingState.open;
-      const summary = document.createElement("summary");
-      summary.textContent = thinkingPending ? "思考中…" : "思考过程";
-      const thinkingBody = document.createElement("div");
+      thinkingSummary = document.createElement("summary");
+      thinkingSummary.textContent = thinkingPending ? "思考中…" : "思考过程";
+      thinkingBody = document.createElement("div");
       thinkingBody.className = "thinking-content";
       thinkingBody.textContent = thinking;
-      block.append(summary, thinkingBody);
+      block.append(thinkingSummary, thinkingBody);
       block.addEventListener("toggle", () => {
         thinkingState.open = block.open;
       });
@@ -1727,6 +1748,7 @@
     body.textContent = content;
     message.appendChild(body);
     conversationMessagesElement.appendChild(message);
+    return { thinkingSummary, thinkingBody, contentBody: body };
   }
 
   function showOverlay(content, isError = false, interruption = "") {
@@ -1977,6 +1999,7 @@
     translationText = null;
     interruptionMessage = null;
     conversationMessagesElement = null;
+    conversationDraftElements = null;
     conversationInput = null;
     conversationSendButton = null;
     conversationStatus = null;
