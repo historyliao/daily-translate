@@ -112,7 +112,7 @@ export async function streamPiTranslation({
   modelId,
   modelParameters,
   systemPrompt,
-  text,
+  messages,
   signal,
   timeoutMs,
   onResponse,
@@ -146,7 +146,25 @@ export async function streamPiTranslation({
       };
   const context = {
     systemPrompt,
-    messages: [{ role: "user", content: text, timestamp: Date.now() }]
+    messages: messages.map((message, index) => message.role === "user"
+      ? { role: "user", content: message.content, timestamp: Date.now() + index }
+      : {
+          role: "assistant",
+          content: [{ type: "text", text: message.content }],
+          api: resolvedApi,
+          provider: providerId,
+          model: modelId,
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+          },
+          stopReason: "stop",
+          timestamp: Date.now() + index
+        })
   };
   const stream = api.streamSimple(model, context, {
     ...modelParameters,
