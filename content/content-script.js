@@ -32,7 +32,8 @@
   let translationEnabled;
   let translationMode = defaultTranslationMode;
   let conversation = null;
-  let conversationPosition = null;
+  let overlayPosition = null;
+  let translationPlacement = null;
   let isActiveTranslationTab = false;
   let activeTranslationStateVersion = 0;
   let pageTranslationDocumentUrl = getPageTranslationDocumentUrl(location.href);
@@ -1580,7 +1581,7 @@
     conversationStatus = shadowRoot.querySelector(".conversation-status");
     conversationRetryButton = shadowRoot.querySelector(".conversation-retry");
     shadowRoot.querySelector(".conversation-source").textContent = conversation.sourceText;
-    shadowRoot.querySelector(".conversation-header").addEventListener("pointerdown", startConversationDrag);
+    shadowRoot.querySelector(".conversation-header").addEventListener("pointerdown", startOverlayDrag);
     shadowRoot.querySelector(".conversation-close").addEventListener("click", closeOverlay);
     conversationInput.addEventListener("input", renderConversation);
     conversationInput.addEventListener("keydown", (event) => {
@@ -1597,7 +1598,7 @@
     repositionOverlay();
   }
 
-  function startConversationDrag(event) {
+  function startOverlayDrag(event) {
     if (event.button !== 0 || event.target.closest(".conversation-close")) {
       return;
     }
@@ -1609,7 +1610,7 @@
     const startLeft = panelRect.left;
     const startTop = panelRect.top;
     const handleMove = (moveEvent) => {
-      setConversationPosition(
+      setOverlayPosition(
         startLeft + moveEvent.clientX - startX,
         startTop + moveEvent.clientY - startY
       );
@@ -1625,19 +1626,19 @@
     header.addEventListener("pointercancel", handleEnd);
   }
 
-  function setConversationPosition(left, top) {
+  function setOverlayPosition(left, top) {
     if (!overlayHost || !translationCard) {
       return;
     }
     const panelRect = translationCard.getBoundingClientRect();
     const maxLeft = Math.max(8, window.innerWidth - panelRect.width - 8);
     const maxTop = Math.max(8, window.innerHeight - panelRect.height - 8);
-    conversationPosition = {
+    overlayPosition = {
       left: Math.round(Math.min(Math.max(left, 8), maxLeft)),
       top: Math.round(Math.min(Math.max(top, 8), maxTop))
     };
-    overlayHost.style.left = `${conversationPosition.left}px`;
-    overlayHost.style.top = `${conversationPosition.top}px`;
+    overlayHost.style.left = `${overlayPosition.left}px`;
+    overlayHost.style.top = `${overlayPosition.top}px`;
   }
 
   function renderConversation() {
@@ -1689,8 +1690,8 @@
       : conversation.error
         ? "本轮回答失败，可重试"
         : `已交互 ${Math.floor(conversation.messages.length / 2)} 轮`;
-    if (conversationPosition) {
-      setConversationPosition(conversationPosition.left, conversationPosition.top);
+    if (overlayPosition) {
+      setOverlayPosition(overlayPosition.left, overlayPosition.top);
     }
     conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
   }
@@ -1710,8 +1711,8 @@
       elements.thinkingSummary.textContent = conversation.draftAnswer ? "思考过程" : "思考中…";
     }
     elements.contentBody.textContent = conversation.draftAnswer || "正在回答…";
-    if (conversationPosition) {
-      setConversationPosition(conversationPosition.left, conversationPosition.top);
+    if (overlayPosition) {
+      setOverlayPosition(overlayPosition.left, overlayPosition.top);
     }
     conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
   }
@@ -1809,6 +1810,9 @@
             padding: 10px 14px;
             border-bottom: 1px solid var(--translator-divider);
             background: linear-gradient(135deg, var(--translator-header-background), transparent);
+            cursor: move;
+            touch-action: none;
+            user-select: none;
           }
           .brand-icon {
             display: inline-flex;
@@ -1924,6 +1928,7 @@
         </section>
       `;
       translationCard = shadowRoot.querySelector(".translation-card");
+      shadowRoot.querySelector(".translation-header").addEventListener("pointerdown", startOverlayDrag);
       brandIcon = shadowRoot.querySelector(".brand-icon");
       translationTitle = shadowRoot.querySelector(".translation-title");
       loadingIndicator = shadowRoot.querySelector(".loading-indicator");
@@ -1976,8 +1981,8 @@
     }
 
     const panelRect = panel.getBoundingClientRect();
-    if (conversationPosition) {
-      setConversationPosition(conversationPosition.left, conversationPosition.top);
+    if (overlayPosition) {
+      setOverlayPosition(overlayPosition.left, overlayPosition.top);
       return;
     }
     const gap = 8;
@@ -1985,12 +1990,19 @@
       12,
       Math.min(anchorRect.left, window.innerWidth - panelRect.width - 12)
     );
-    let top = anchorRect.bottom + gap;
-    if (top + panelRect.height > window.innerHeight - 12) {
-      top = anchorRect.top - panelRect.height - gap;
+    if (!translationPlacement) {
+      const roomBelow = window.innerHeight - 12 - anchorRect.bottom - gap;
+      const roomAbove = anchorRect.top - gap - 12;
+      translationPlacement = roomBelow >= roomAbove ? "below" : "above";
     }
+    const anchoredTop = translationPlacement === "below"
+      ? anchorRect.bottom + gap
+      : anchorRect.top - panelRect.height - gap;
     overlayHost.style.left = `${Math.round(left)}px`;
-    overlayHost.style.top = `${Math.max(12, Math.round(top))}px`;
+    overlayHost.style.top = `${Math.max(
+      12,
+      Math.min(Math.round(anchoredTop), window.innerHeight - panelRect.height - 12)
+    )}px`;
   }
 
   function closeOverlay() {
@@ -2006,7 +2018,8 @@
     overlayHost = null;
     shadowRoot = null;
     translationCard = null;
-    conversationPosition = null;
+    overlayPosition = null;
+    translationPlacement = null;
     brandIcon = null;
     translationTitle = null;
     loadingIndicator = null;
