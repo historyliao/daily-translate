@@ -49,7 +49,7 @@ npm run build
 - `Base URL`：模型服务地址。选择内置服务商时自动填入默认地址，也可以改为代理、内网网关或本地部署地址。例如 DeepSeek 使用 `https://api.deepseek.com`，OpenAI 使用 `https://api.openai.com/v1`，Anthropic 使用 `https://api.anthropic.com`，Google 使用 `https://generativelanguage.googleapis.com/v1beta`，Mistral 使用 `https://api.mistral.ai`。
 - `Token`：API 访问令牌。
 - `Model`：可以从内置模型建议中选择，也可以手动填写服务商尚未收录的模型标识。
-- `模型参数（JSON）`：可选，支持 `temperature`、`maxTokens`、`thinking`、`effort` 和 `samplingParams`。例如 `{"temperature": 0, "maxTokens": 2048, "thinking": false, "effort": "low"}`。开启 `thinking` 后，`effort` 可设置为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；配置 `"thinking": false` 时会按服务商的参数格式发送显式关闭字段（例如 DeepSeek 系的 `"thinking": {"type": "disabled"}`），若所用服务商不认这些字段或需要别的字段名，可用 `samplingParams` 直接指定，例如 `{"samplingParams": {"thinking": {"type": "disabled"}}}`。
+- `模型参数（JSON）`：可选，支持 `temperature`、`maxTokens`、`thinking`、`effort` 和 `samplingParams`。例如 `{"temperature": 0, "maxTokens": 2048, "thinking": false, "effort": "low"}`。开启 `thinking` 后，`effort` 可设置为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；关闭思考时按服务商格式发送关闭字段，DeepSeek 系服务同时发送官方文档允许的两种写法（`"thinking": {"type": "disabled"}` 与 `"reasoning_effort": "none"`）。其它网关若不认这些字段或需要别的字段名，可用 `samplingParams` 直接指定，例如 `{"samplingParams": {"reasoning_effort": "none"}}`；`samplingParams` 里的同名键优先于插件自动发送的值。
 - `实时显示结果`：默认关闭，等待模型完成后一次显示；开启后随模型的输出片段逐步显示。解读对话框的思考过程和回答不受该开关影响，始终随模型输出实时展示。底层请求和响应格式由所选 API 适配器处理。
 - `目标语言`：点击工具栏中的插件图标，在“控制”页选择；默认是简体中文。
 

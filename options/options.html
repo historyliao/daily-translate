@@ -41,7 +41,7 @@
 
         <label for="model-parameters">模型参数（JSON，可选）</label>
         <textarea id="model-parameters" name="model-parameters" rows="9" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "maxTokens": 2048,&#10;  "thinking": false,&#10;  "effort": "low"&#10;}'></textarea>
-        <p class="help">支持 temperature、maxTokens、thinking、effort 和 samplingParams；thinking 开启后按 effort 请求推理，关闭时按服务商格式发送关闭字段，具体能力取决于模型及 API 类型。服务商不认这些字段时可用 samplingParams 直接指定。</p>
+        <p class="help">支持 temperature、maxTokens、thinking、effort 和 samplingParams；thinking 开启后按 effort 请求推理，关闭时按服务商格式发送关闭字段（DeepSeek 系同时发送 thinking 与 reasoning_effort 两种写法），具体能力取决于模型及 API 类型。服务商不认这些字段时可用 samplingParams 指定，其同名键优先。</p>
 
         <label class="toggle" for="realtime-output">
           <input id="realtime-output" name="realtime-output" type="checkbox">

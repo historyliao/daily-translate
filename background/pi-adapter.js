@@ -132,6 +132,7 @@ export async function streamPiTranslation({
     throw new Error("INVALID_PROVIDER");
   }
   const reasoningOff = modelParameters.reasoning === "off";
+  const deepSeekEndpoint = providerId === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
   const model = catalogModel
     ? { ...catalogModel, baseUrl }
     : {
@@ -172,6 +173,9 @@ export async function streamPiTranslation({
   const stream = api.streamSimple(model, context, {
     ...modelParameters,
     reasoning: reasoningOff ? undefined : modelParameters.reasoning,
+    ...(reasoningOff && deepSeekEndpoint
+      ? { samplingParams: { reasoning_effort: "none", ...modelParameters.samplingParams } }
+      : {}),
     apiKey: token,
     signal,
     timeoutMs,
