@@ -486,7 +486,6 @@ async function requestTranslation(
   let ttftMs = null;
   let durationMs;
   let responseContent = "";
-  let thinkingContent = "";
   const diagnostics = {
     stage: "read_settings",
     requestType,
@@ -547,6 +546,7 @@ async function requestTranslation(
     }
     const resolvedApi = resolveProviderApi(providerId, model, apiType);
     const realtime = realtimeOutput === true;
+    const streamChunks = realtime || requestType === "explain";
     const targetLanguage = TARGET_LANGUAGE_NAMES[settings.targetLanguage]
       || TARGET_LANGUAGE_NAMES[DEFAULT_TARGET_LANGUAGE];
     modelKey = `${providerId}/${model}`;
@@ -590,16 +590,12 @@ async function requestTranslation(
           diagnostics.ttftMs = ttftMs;
         }
         responseContent += content;
-        if (realtime) {
+        if (streamChunks) {
           onChunk(content);
         }
       },
       onThinking: (content) => {
-        if (!onThinking) {
-          return;
-        }
-        thinkingContent += content;
-        if (realtime) {
+        if (onThinking) {
           onThinking(content);
         }
       },
@@ -611,10 +607,7 @@ async function requestTranslation(
     if (!responseContent.trim()) {
       throw new Error("EMPTY_RESPONSE");
     }
-    if (!realtime) {
-      if (onThinking && thinkingContent.trim()) {
-        onThinking(thinkingContent.trim());
-      }
+    if (!streamChunks) {
       onChunk(responseContent.trim());
     }
     durationMs = getElapsedMilliseconds(requestStart);
