@@ -117,6 +117,7 @@ export async function streamPiTranslation({
   timeoutMs,
   onResponse,
   onText,
+  onThinking,
   onActivity
 }) {
   const provider = providers.get(providerId);
@@ -181,6 +182,7 @@ export async function streamPiTranslation({
       onText(event.delta);
     } else if (event.type === "thinking_delta" && event.delta) {
       onActivity();
+      onThinking(event.delta);
     }
   }
 

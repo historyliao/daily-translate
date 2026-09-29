@@ -238,6 +238,11 @@ chrome.runtime.onConnect.addListener((port) => {
           controller.abort();
           throw new Error("CANCELED");
         }
+      }, (content) => {
+        if (disconnected || !postToPort(port, { type: "thinking", content })) {
+          controller.abort();
+          throw new Error("CANCELED");
+        }
       });
     } else if (message.type === "translate-batch") {
       operation = translateBatch(message.items, controller, (item) => {
@@ -303,7 +308,7 @@ async function translate(text, controller, onChunk) {
   return model;
 }
 
-async function explainConversation(messages, controller, onChunk) {
+async function explainConversation(messages, controller, onChunk, onThinking) {
   const conversationMessages = getValidConversationMessages(messages);
   const { model } = await requestTranslation(
     "",
@@ -314,7 +319,8 @@ async function explainConversation(messages, controller, onChunk) {
     REQUEST_TIMEOUT_MS,
     false,
     "explain",
-    conversationMessages
+    conversationMessages,
+    onThinking
   );
   return model;
 }
@@ -456,7 +462,8 @@ async function requestTranslation(
   timeoutMs = REQUEST_TIMEOUT_MS,
   jsonOutput = false,
   requestType = jsonOutput ? "batch" : "selection",
-  messages
+  messages,
+  onThinking
 ) {
   const requestController = new AbortController();
   const cancelRequest = () => requestController.abort();
@@ -479,6 +486,7 @@ async function requestTranslation(
   let ttftMs = null;
   let durationMs;
   let responseContent = "";
+  let thinkingContent = "";
   const diagnostics = {
     stage: "read_settings",
     requestType,
@@ -586,6 +594,15 @@ async function requestTranslation(
           onChunk(content);
         }
       },
+      onThinking: (content) => {
+        if (!onThinking) {
+          return;
+        }
+        thinkingContent += content;
+        if (realtime) {
+          onThinking(content);
+        }
+      },
       onActivity: resetTimeout
     });
     diagnostics.finishReason = piResult.stopReason;
@@ -595,6 +612,9 @@ async function requestTranslation(
       throw new Error("EMPTY_RESPONSE");
     }
     if (!realtime) {
+      if (onThinking && thinkingContent.trim()) {
+        onThinking(thinkingContent.trim());
+      }
       onChunk(responseContent.trim());
     }
     durationMs = getElapsedMilliseconds(requestStart);

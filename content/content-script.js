@@ -31,6 +31,7 @@
   let translationEnabled;
   let translationMode = defaultTranslationMode;
   let conversation = null;
+  let conversationPosition = null;
   let isActiveTranslationTab = false;
   let activeTranslationStateVersion = 0;
   let pageTranslationDocumentUrl = getPageTranslationDocumentUrl(location.href);
@@ -205,6 +206,9 @@
       inFlight: false,
       pendingQuestion: "",
       draftAnswer: "",
+      draftThinking: "",
+      draftThinkingState: { open: false },
+      thinkingStates: new WeakMap(),
       error: ""
     };
     showConversationDialog();
@@ -237,6 +241,8 @@
     conversation.inFlight = true;
     conversation.pendingQuestion = pendingQuestion;
     conversation.draftAnswer = "";
+    conversation.draftThinking = "";
+    conversation.draftThinkingState = { open: false };
     conversation.error = "";
     renderConversation();
 
@@ -262,15 +268,26 @@
       if (message?.type === "chunk" && typeof message.content === "string") {
         conversation.draftAnswer += message.content;
         renderConversation();
+      } else if (message?.type === "thinking" && typeof message.content === "string") {
+        conversation.draftThinking += message.content;
+        renderConversation();
       } else if (message?.type === "done") {
         const answer = conversation.draftAnswer.trim();
         if (conversation.pendingQuestion) {
           conversation.messages.push({ role: "user", content: conversation.pendingQuestion });
           conversationInput.value = "";
         }
-        conversation.messages.push({ role: "assistant", content: answer });
+        const assistantMessage = {
+          role: "assistant",
+          content: answer,
+          thinking: conversation.draftThinking.trim()
+        };
+        conversation.messages.push(assistantMessage);
+        conversation.thinkingStates.set(assistantMessage, conversation.draftThinkingState);
         conversation.pendingQuestion = "";
         conversation.draftAnswer = "";
+        conversation.draftThinking = "";
+        conversation.draftThinkingState = { open: false };
         conversation.inFlight = false;
         translationPort = null;
         disconnectPort(port);
@@ -1373,6 +1390,9 @@
           padding: 10px 12px;
           border-bottom: 1px solid var(--conversation-divider);
           background: var(--conversation-panel);
+          cursor: move;
+          touch-action: none;
+          user-select: none;
         }
         .conversation-icon {
           display: inline-flex;
@@ -1439,6 +1459,31 @@
         .message-user .message-content {
           background: var(--conversation-user);
           color: #fff;
+        }
+        .message-thinking {
+          max-width: 88%;
+          margin-bottom: 6px;
+          padding: 8px 11px;
+          border: 1px solid var(--conversation-border);
+          border-radius: 10px;
+          background: var(--conversation-panel);
+          color: var(--conversation-muted);
+          font-size: 12px;
+          line-height: 1.55;
+        }
+        .message-thinking summary {
+          cursor: pointer;
+          font-weight: 650;
+          user-select: none;
+        }
+        .message-thinking[open] summary { margin-bottom: 6px; }
+        .thinking-content {
+          max-height: 220px;
+          overflow: auto;
+          scrollbar-color: var(--conversation-border) transparent;
+          scrollbar-width: thin;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
         }
         .message-error .message-content {
           border: 1px solid #fecaca;
@@ -1534,6 +1579,7 @@
     conversationStatus = shadowRoot.querySelector(".conversation-status");
     conversationRetryButton = shadowRoot.querySelector(".conversation-retry");
     shadowRoot.querySelector(".conversation-source").textContent = conversation.sourceText;
+    shadowRoot.querySelector(".conversation-header").addEventListener("pointerdown", startConversationDrag);
     shadowRoot.querySelector(".conversation-close").addEventListener("click", closeOverlay);
     conversationInput.addEventListener("input", renderConversation);
     conversationInput.addEventListener("keydown", (event) => {
@@ -1550,16 +1596,69 @@
     repositionOverlay();
   }
 
+  function startConversationDrag(event) {
+    if (event.button !== 0 || event.target.closest(".conversation-close")) {
+      return;
+    }
+    event.preventDefault();
+    const header = event.currentTarget;
+    const panelRect = translationCard.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startLeft = panelRect.left;
+    const startTop = panelRect.top;
+    const handleMove = (moveEvent) => {
+      setConversationPosition(
+        startLeft + moveEvent.clientX - startX,
+        startTop + moveEvent.clientY - startY
+      );
+    };
+    const handleEnd = () => {
+      header.removeEventListener("pointermove", handleMove);
+      header.removeEventListener("pointerup", handleEnd);
+      header.removeEventListener("pointercancel", handleEnd);
+    };
+    header.setPointerCapture(event.pointerId);
+    header.addEventListener("pointermove", handleMove);
+    header.addEventListener("pointerup", handleEnd);
+    header.addEventListener("pointercancel", handleEnd);
+  }
+
+  function setConversationPosition(left, top) {
+    if (!overlayHost || !translationCard) {
+      return;
+    }
+    const panelRect = translationCard.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - panelRect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - panelRect.height - 8);
+    conversationPosition = {
+      left: Math.round(Math.min(Math.max(left, 8), maxLeft)),
+      top: Math.round(Math.min(Math.max(top, 8), maxTop))
+    };
+    overlayHost.style.left = `${conversationPosition.left}px`;
+    overlayHost.style.top = `${conversationPosition.top}px`;
+  }
+
   function renderConversation() {
     if (!conversation || !conversationMessagesElement) {
       return;
     }
     conversationMessagesElement.replaceChildren();
     for (const message of conversation.messages.slice(1)) {
-      appendConversationMessage(message.role, message.content);
+      let thinkingState = conversation.thinkingStates.get(message);
+      if (!thinkingState) {
+        thinkingState = { open: false };
+        conversation.thinkingStates.set(message, thinkingState);
+      }
+      appendConversationMessage({
+        role: message.role,
+        content: message.content,
+        thinking: message.thinking,
+        thinkingState
+      });
     }
     if (conversation.pendingQuestion) {
-      appendConversationMessage("user", conversation.pendingQuestion);
+      appendConversationMessage({ role: "user", content: conversation.pendingQuestion });
     }
     if (conversation.inFlight || conversation.draftAnswer || conversation.error) {
       let content = conversation.draftAnswer || (conversation.inFlight ? "正在回答…" : "");
@@ -1568,7 +1667,14 @@
           ? `${content}\n\n回答中断：${conversation.error}`
           : conversation.error;
       }
-      appendConversationMessage("assistant", content, Boolean(conversation.error));
+      appendConversationMessage({
+        role: "assistant",
+        content,
+        thinking: conversation.draftThinking.trim(),
+        thinkingState: conversation.draftThinkingState,
+        thinkingPending: conversation.inFlight && !conversation.draftAnswer,
+        isError: Boolean(conversation.error)
+      });
     }
 
     const initialRequestPending = conversation.messages.length === 1;
@@ -1581,19 +1687,45 @@
       : conversation.error
         ? "本轮回答失败，可重试"
         : `已使用 ${Math.floor(conversation.messages.length / 2)} 轮`;
+    if (conversationPosition) {
+      setConversationPosition(conversationPosition.left, conversationPosition.top);
+    }
     conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
   }
 
-  function appendConversationMessage(role, content, isError = false) {
+  function appendConversationMessage({
+    role,
+    content,
+    isError = false,
+    thinking = "",
+    thinkingState,
+    thinkingPending = false
+  }) {
     const message = document.createElement("div");
     message.className = `message message-${role}${isError ? " message-error" : ""}`;
     const label = document.createElement("div");
     label.className = "message-label";
     label.textContent = role === "user" ? "你" : "AI";
+    message.appendChild(label);
+    if (thinking) {
+      const block = document.createElement("details");
+      block.className = "message-thinking";
+      block.open = thinkingState.open;
+      const summary = document.createElement("summary");
+      summary.textContent = thinkingPending ? "思考中…" : "思考过程";
+      const thinkingBody = document.createElement("div");
+      thinkingBody.className = "thinking-content";
+      thinkingBody.textContent = thinking;
+      block.append(summary, thinkingBody);
+      block.addEventListener("toggle", () => {
+        thinkingState.open = block.open;
+      });
+      message.appendChild(block);
+    }
     const body = document.createElement("div");
     body.className = "message-content";
     body.textContent = content;
-    message.append(label, body);
+    message.appendChild(body);
     conversationMessagesElement.appendChild(message);
   }
 
@@ -1808,6 +1940,10 @@
     }
 
     const panelRect = panel.getBoundingClientRect();
+    if (conversationPosition) {
+      setConversationPosition(conversationPosition.left, conversationPosition.top);
+      return;
+    }
     const gap = 8;
     const left = Math.max(
       12,
@@ -1834,6 +1970,7 @@
     overlayHost = null;
     shadowRoot = null;
     translationCard = null;
+    conversationPosition = null;
     brandIcon = null;
     translationTitle = null;
     loadingIndicator = null;
