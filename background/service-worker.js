@@ -18,12 +18,11 @@ const DEFAULT_TARGET_LANGUAGE = "zh-CN";
 const MODEL_PARAMETER_NAMES = new Set([
   "temperature",
   "maxTokens",
-  "reasoning",
-  "thinkingBudgets",
+  "thinking",
+  "effort",
   "samplingParams"
 ]);
-const REASONING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
-const THINKING_BUDGET_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+const EFFORT_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const RESERVED_SAMPLING_PARAMETERS = new Set([
   "model",
   "messages",
@@ -1292,25 +1291,14 @@ function getModelParameters(value) {
   ) {
     throw new Error("INVALID_MODEL_PARAMETERS");
   }
-  if (value.reasoning !== undefined && !REASONING_LEVELS.has(value.reasoning)) {
+  if (value.thinking !== undefined && typeof value.thinking !== "boolean") {
     throw new Error("INVALID_MODEL_PARAMETERS");
   }
-  if (value.thinkingBudgets !== undefined) {
-    if (
-      !value.thinkingBudgets ||
-      typeof value.thinkingBudgets !== "object" ||
-      Array.isArray(value.thinkingBudgets)
-    ) {
-      throw new Error("INVALID_MODEL_PARAMETERS");
-    }
-    const invalidBudget = Object.entries(value.thinkingBudgets).some(([level, budget]) => (
-      !THINKING_BUDGET_LEVELS.has(level) ||
-      !Number.isSafeInteger(budget) ||
-      budget <= 0
-    ));
-    if (invalidBudget) {
-      throw new Error("INVALID_MODEL_PARAMETERS");
-    }
+  if (value.effort !== undefined && !EFFORT_LEVELS.has(value.effort)) {
+    throw new Error("INVALID_MODEL_PARAMETERS");
+  }
+  if (value.thinking === true && value.effort === undefined) {
+    throw new Error("INVALID_MODEL_PARAMETERS");
   }
   if (value.samplingParams !== undefined) {
     if (
@@ -1322,7 +1310,11 @@ function getModelParameters(value) {
       throw new Error("INVALID_MODEL_PARAMETERS");
     }
   }
-  return value;
+  const { thinking, effort, ...modelParameters } = value;
+  if (thinking === true) {
+    modelParameters.reasoning = effort;
+  }
+  return modelParameters;
 }
 
 function toUserError(error) {

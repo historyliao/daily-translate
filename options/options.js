@@ -10,15 +10,20 @@ const modelParametersInput = document.querySelector("#model-parameters");
 const realtimeOutputInput = document.querySelector("#realtime-output");
 const status = document.querySelector("#status");
 const toggleToken = document.querySelector("#toggle-token");
+const defaultModelParameters = {
+  temperature: 0,
+  maxTokens: 2048,
+  thinking: false,
+  effort: "low"
+};
 const modelParameterNames = new Set([
   "temperature",
   "maxTokens",
-  "reasoning",
-  "thinkingBudgets",
+  "thinking",
+  "effort",
   "samplingParams"
 ]);
-const reasoningLevels = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
-const thinkingBudgetLevels = new Set(["minimal", "low", "medium", "high"]);
+const effortLevels = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const reservedSamplingParameters = new Set([
   "model",
   "messages",
@@ -141,7 +146,7 @@ async function loadSettings() {
     modelInput.value = settings.model || "";
     modelParametersInput.value = settings.modelParameters && Object.keys(settings.modelParameters).length > 0
       ? JSON.stringify(settings.modelParameters, null, 2)
-      : "";
+      : JSON.stringify(defaultModelParameters, null, 2);
     realtimeOutputInput.checked = settings.realtimeOutput === true;
     tokenConfigured = settings.tokenConfigured === true;
     renderProviderFields();
@@ -214,18 +219,14 @@ function parseModelParameters(value) {
   ) {
     throw new Error("maxTokens 必须是正整数");
   }
-  if (parameters.reasoning !== undefined && !reasoningLevels.has(parameters.reasoning)) {
-    throw new Error("reasoning 必须是 minimal、low、medium、high、xhigh 或 max");
+  if (parameters.thinking !== undefined && typeof parameters.thinking !== "boolean") {
+    throw new Error("thinking 必须是布尔值");
   }
-  if (parameters.thinkingBudgets !== undefined) {
-    if (!isPlainObject(parameters.thinkingBudgets)) {
-      throw new Error("thinkingBudgets 必须是 JSON 对象");
-    }
-    for (const [level, budget] of Object.entries(parameters.thinkingBudgets)) {
-      if (!thinkingBudgetLevels.has(level) || !Number.isSafeInteger(budget) || budget <= 0) {
-        throw new Error("thinkingBudgets 只支持 minimal、low、medium、high 的正整数预算");
-      }
-    }
+  if (parameters.effort !== undefined && !effortLevels.has(parameters.effort)) {
+    throw new Error("effort 必须是 minimal、low、medium、high、xhigh 或 max");
+  }
+  if (parameters.thinking === true && parameters.effort === undefined) {
+    throw new Error("启用 thinking 时必须设置 effort");
   }
   if (parameters.samplingParams !== undefined) {
     if (!isPlainObject(parameters.samplingParams)) {

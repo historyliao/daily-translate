@@ -49,7 +49,7 @@ npm run build
 - `Base URL`：模型服务地址。选择内置服务商时自动填入默认地址，也可以改为代理、内网网关或本地部署地址。例如 DeepSeek 使用 `https://api.deepseek.com`，OpenAI 使用 `https://api.openai.com/v1`，Anthropic 使用 `https://api.anthropic.com`，Google 使用 `https://generativelanguage.googleapis.com/v1beta`，Mistral 使用 `https://api.mistral.ai`。
 - `Token`：API 访问令牌。
 - `Model`：可以从内置模型建议中选择，也可以手动填写服务商尚未收录的模型标识。
-- `模型参数（JSON）`：可选，支持 `temperature`、`maxTokens`、`reasoning`、`thinkingBudgets` 和 `samplingParams`。例如 `{"temperature": 0, "maxTokens": 2048, "reasoning": "low", "samplingParams": {"top_p": 0.9}}`。
+- `模型参数（JSON）`：可选，支持 `temperature`、`maxTokens`、`thinking`、`effort` 和 `samplingParams`。例如 `{"temperature": 0, "maxTokens": 2048, "thinking": false, "effort": "low"}`。开启 `thinking` 后，`effort` 可设置为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。
 - `实时显示结果`：默认关闭，等待模型完成后一次显示；开启后随模型的输出片段逐步显示。底层请求和响应格式由所选 API 适配器处理。
 - `目标语言`：点击工具栏中的插件图标，在“控制”页选择；默认是简体中文。
 
@@ -88,7 +88,7 @@ Token 只保存在 Chrome 的 `storage.local` 中，由后台 Service Worker 读
 
 批量 JSON 可解析且 ID 对应关系明确时，仅对缺失条目、缺字段或空译文的条目各补译一次。补译带上可用的同段上下文，要求只返回目标片段的纯文本译文，超时为 30 秒，不重复请求已经取得的条目，额外用量和延迟照常计入监控；补译在当前段落内串行执行，关闭翻译会一并取消。所有补译成功后才提交整个段落；任一补译仍失败则保留整段原文、暂停后续翻译并记录汇总错误。错误详情中的 `invalidItems` 和 `retryFailures` 会分别列出初始异常条目及补译失败原因，帮助定位模型返回格式或 API 问题。
 
-模型参数统一用于划词翻译、划词解读、整页翻译和段落补译请求。例如可使用 `{"temperature": 0}` 降低随机性，使用 `{"maxTokens": 2048}` 控制最大输出长度，或通过 `reasoning` 和 `thinkingBudgets` 权衡响应速度与输出质量。`samplingParams` 用于传入 `top_p` 等 pi 未统一建模的 OpenAI-compatible 采样参数。不同服务支持的字段和值不同；不支持的参数会由模型服务返回原始错误。模型、消息、Token、取消信号、重试策略和实时展示行为由插件管理，不能通过模型参数覆盖。
+模型参数统一用于划词翻译、划词解读、整页翻译和段落补译请求。例如可使用 `{"temperature": 0}` 降低随机性，使用 `{"maxTokens": 2048}` 控制最大输出长度，或开启 `thinking` 并设置 `effort` 权衡响应速度与输出质量。`samplingParams` 用于传入 `top_p` 等 pi 未统一建模的 OpenAI-compatible 采样参数。不同服务支持的字段和值不同；不支持的参数会由模型服务返回原始错误。模型、消息、Token、取消信号、重试策略和实时展示行为由插件管理，不能通过模型参数覆盖。
 
 遇到翻译错误时，控制面板日志会区分空译文、JSON 格式错误、批量条目数或 ID 不匹配、输出长度截断等原因。模型服务报错会直接展示 pi 适配器保留的原始错误正文；当前配置的 Token 和 Bearer 凭据会脱敏，超过 8192 字符的错误内容会截断并标注。展开“错误详情”可查看失败阶段、错误代码、服务商、API 类型、API 主机、实时展示状态、HTTP 状态、返回字符数、耗时、模型结束原因及批量校验细节。插件不主动记录原文、译文或思考内容，但服务端错误可能回显请求文本，分享日志前请检查。JSON 输出约束不能保证条目完整，插件仍会校验每个 ID，避免将译文写到错误位置。
 

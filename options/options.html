@@ -40,8 +40,8 @@
         <datalist id="model-list"></datalist>
 
         <label for="model-parameters">模型参数（JSON，可选）</label>
-        <textarea id="model-parameters" name="model-parameters" rows="9" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "maxTokens": 2048,&#10;  "reasoning": "low",&#10;  "samplingParams": { "top_p": 0.9 }&#10;}'></textarea>
-        <p class="help">支持 temperature、maxTokens、reasoning、thinkingBudgets 和 samplingParams；具体能力取决于模型及 API 类型。</p>
+        <textarea id="model-parameters" name="model-parameters" rows="9" spellcheck="false" placeholder='例如：&#10;{&#10;  "temperature": 0,&#10;  "maxTokens": 2048,&#10;  "thinking": false,&#10;  "effort": "low"&#10;}'></textarea>
+        <p class="help">支持 temperature、maxTokens、thinking、effort 和 samplingParams；thinking 开启后按 effort 请求推理，具体能力取决于模型及 API 类型。</p>
 
         <label class="toggle" for="realtime-output">
           <input id="realtime-output" name="realtime-output" type="checkbox">
