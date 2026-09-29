@@ -11,7 +11,6 @@ const BATCH_REQUEST_TIMEOUT_MS = 60000;
 const DAILY_USAGE_RETENTION_DAYS = 90;
 const LATENCY_SAMPLE_LIMIT = 500;
 const RUNTIME_LOG_LIMIT = 500;
-const CONVERSATION_MESSAGE_LIMIT = 20;
 const CONVERSATION_MESSAGE_CHARACTER_LIMIT = 12000;
 const CONVERSATION_CHARACTER_LIMIT = 50000;
 const CONTENT_SCRIPT_SESSION_KEY = "contentScriptsRestored";
@@ -692,7 +691,7 @@ function createExplainSystemPrompt(targetLanguage) {
 }
 
 function getValidConversationMessages(messages) {
-  if (!Array.isArray(messages) || messages.length === 0 || messages.length > CONVERSATION_MESSAGE_LIMIT) {
+  if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error("INVALID_CONVERSATION");
   }
   let totalCharacters = 0;

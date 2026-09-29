@@ -7,7 +7,6 @@
   const fullPageParagraphMaxCharacters = 12000;
   const explanationContextMaxCharacters = 1200;
   const explanationTitleMaxCharacters = 200;
-  const conversationMessageLimit = 20;
   const defaultTranslationMode = "selection";
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let active = true;
@@ -206,8 +205,7 @@
       inFlight: false,
       pendingQuestion: "",
       draftAnswer: "",
-      error: "",
-      limitReached: false
+      error: ""
     };
     showConversationDialog();
     requestConversationAnswer();
@@ -232,12 +230,6 @@
     if (!initialRequest && !pendingQuestion) {
       return;
     }
-    if (!initialRequest && conversation.messages.length >= conversationMessageLimit) {
-      conversation.limitReached = true;
-      renderConversation();
-      return;
-    }
-
     const messages = pendingQuestion
       ? [...conversation.messages, { role: "user", content: pendingQuestion }]
       : [...conversation.messages];
@@ -1580,17 +1572,15 @@
     }
 
     const initialRequestPending = conversation.messages.length === 1;
-    const inputDisabled = conversation.inFlight || initialRequestPending || conversation.limitReached;
+    const inputDisabled = conversation.inFlight || initialRequestPending;
     conversationInput.disabled = inputDisabled;
     conversationSendButton.disabled = inputDisabled || !conversationInput.value.trim();
     conversationRetryButton.hidden = !conversation.error;
-    conversationStatus.textContent = conversation.limitReached
-      ? "本次会话已达到上限，请重新选择文字开始新会话"
-      : conversation.inFlight
-        ? "正在回答…"
-        : conversation.error
-          ? "本轮回答失败，可重试"
-          : `已使用 ${Math.floor(conversation.messages.length / 2)}/10 轮`;
+    conversationStatus.textContent = conversation.inFlight
+      ? "正在回答…"
+      : conversation.error
+        ? "本轮回答失败，可重试"
+        : `已使用 ${Math.floor(conversation.messages.length / 2)} 轮`;
     conversationMessagesElement.scrollTop = conversationMessagesElement.scrollHeight;
   }
 
