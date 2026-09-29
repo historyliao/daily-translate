@@ -131,6 +131,7 @@ export async function streamPiTranslation({
   if (!api) {
     throw new Error("INVALID_PROVIDER");
   }
+  const reasoningOff = modelParameters.reasoning === "off";
   const model = catalogModel
     ? { ...catalogModel, baseUrl }
     : {
@@ -140,6 +141,7 @@ export async function streamPiTranslation({
         provider: providerId,
         baseUrl,
         reasoning: modelParameters.reasoning !== undefined,
+        ...(reasoningOff ? { compat: { supportsDeveloperRole: false } } : {}),
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000,
@@ -169,6 +171,7 @@ export async function streamPiTranslation({
   };
   const stream = api.streamSimple(model, context, {
     ...modelParameters,
+    reasoning: reasoningOff ? undefined : modelParameters.reasoning,
     apiKey: token,
     signal,
     timeoutMs,

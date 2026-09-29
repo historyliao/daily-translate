@@ -1326,6 +1326,8 @@ function getModelParameters(value) {
   const { thinking, effort, ...modelParameters } = value;
   if (thinking === true) {
     modelParameters.reasoning = effort;
+  } else if (thinking === false) {
+    modelParameters.reasoning = "off";
   }
   return modelParameters;
 }
