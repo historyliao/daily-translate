@@ -208,7 +208,7 @@
       pendingQuestion: "",
       draftAnswer: "",
       draftThinking: "",
-      draftThinkingState: { open: false },
+      draftThinkingState: { open: false, follow: true, scrollTop: 0 },
       thinkingStates: new WeakMap(),
       error: ""
     };
@@ -243,7 +243,7 @@
     conversation.pendingQuestion = pendingQuestion;
     conversation.draftAnswer = "";
     conversation.draftThinking = "";
-    conversation.draftThinkingState = { open: false };
+    conversation.draftThinkingState = { open: false, follow: true, scrollTop: 0 };
     conversation.error = "";
     renderConversation();
 
@@ -288,7 +288,7 @@
         conversation.pendingQuestion = "";
         conversation.draftAnswer = "";
         conversation.draftThinking = "";
-        conversation.draftThinkingState = { open: false };
+        conversation.draftThinkingState = { open: false, follow: true, scrollTop: 0 };
         conversation.inFlight = false;
         translationPort = null;
         disconnectPort(port);
@@ -1649,7 +1649,7 @@
     for (const message of conversation.messages.slice(1)) {
       let thinkingState = conversation.thinkingStates.get(message);
       if (!thinkingState) {
-        thinkingState = { open: false };
+        thinkingState = { open: false, follow: false, scrollTop: 0 };
         conversation.thinkingStates.set(message, thinkingState);
       }
       appendConversationMessage({
@@ -1702,7 +1702,11 @@
       return;
     }
     if (elements.thinkingBody) {
-      elements.thinkingBody.textContent = conversation.draftThinking.trim();
+      const thinkingBody = elements.thinkingBody;
+      thinkingBody.textContent = conversation.draftThinking.trim();
+      if (conversation.draftThinkingState.follow) {
+        thinkingBody.scrollTop = thinkingBody.scrollHeight;
+      }
       elements.thinkingSummary.textContent = conversation.draftAnswer ? "思考过程" : "思考中…";
     }
     elements.contentBody.textContent = conversation.draftAnswer || "正在回答…";
@@ -1740,6 +1744,13 @@
       block.append(thinkingSummary, thinkingBody);
       block.addEventListener("toggle", () => {
         thinkingState.open = block.open;
+        if (block.open && thinkingState.follow) {
+          thinkingBody.scrollTop = thinkingBody.scrollHeight;
+        }
+      });
+      thinkingBody.addEventListener("scroll", () => {
+        thinkingState.scrollTop = thinkingBody.scrollTop;
+        thinkingState.follow = thinkingBody.scrollHeight - thinkingBody.scrollTop - thinkingBody.clientHeight < 24;
       });
       message.appendChild(block);
     }
@@ -1748,6 +1759,9 @@
     body.textContent = content;
     message.appendChild(body);
     conversationMessagesElement.appendChild(message);
+    if (thinkingBody) {
+      thinkingBody.scrollTop = thinkingState.follow ? thinkingBody.scrollHeight : thinkingState.scrollTop;
+    }
     return { thinkingSummary, thinkingBody, contentBody: body };
   }
 
